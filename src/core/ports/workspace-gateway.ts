@@ -16,12 +16,12 @@ export interface WorkspaceGateway {
     parentPath: string,
     name: string,
   ): Promise<WorkspaceEntry>;
-  renameFile(
+  renameEntry(
     rootPath: string,
     path: string,
     newStem: string,
   ): Promise<WorkspaceEntry>;
-  trashFile(rootPath: string, path: string): Promise<void>;
+  trashEntry(rootPath: string, path: string): Promise<void>;
   updateProjectViewState(
     rootPath: string,
     viewState: ProjectViewState,

@@ -17,10 +17,12 @@ import {
   keymap,
 } from "@codemirror/view";
 import { useEffect, useRef } from "react";
+import type { TextSelection } from "../../ui/selection-toolbar";
 
 interface MarkdownEditorProps {
   value: string;
   onChange: (value: string) => void;
+  onTextSelection?: (selection: TextSelection | null) => void;
 }
 
 const mardiEditorTheme = EditorView.theme({
@@ -46,14 +48,23 @@ const mardiEditorTheme = EditorView.theme({
   "&.cm-focused": { outline: "none" },
 });
 
-export function MarkdownEditor({ value, onChange }: MarkdownEditorProps) {
+export function MarkdownEditor({
+  value,
+  onChange,
+  onTextSelection,
+}: MarkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
+  const onTextSelectionRef = useRef(onTextSelection);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    onTextSelectionRef.current = onTextSelection;
+  }, [onTextSelection]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -78,6 +89,23 @@ export function MarkdownEditor({ value, onChange }: MarkdownEditorProps) {
           EditorView.updateListener.of((update) => {
             if (update.docChanged) {
               onChangeRef.current(update.state.doc.toString());
+            }
+            if (update.selectionSet) {
+              const range = update.state.selection.main;
+              if (range.empty) {
+                onTextSelectionRef.current?.(null);
+                return;
+              }
+              const start = update.view.coordsAtPos(range.from);
+              if (!start) return;
+              onTextSelectionRef.current?.({
+                text: update.state.sliceDoc(range.from, range.to),
+                anchor: {
+                  x: start.left,
+                  top: start.top,
+                  bottom: start.bottom,
+                },
+              });
             }
           }),
         ],

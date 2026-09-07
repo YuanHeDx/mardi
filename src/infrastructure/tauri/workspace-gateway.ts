@@ -49,20 +49,20 @@ export class TauriWorkspaceGateway implements WorkspaceGateway {
     });
   }
 
-  renameFile(
+  renameEntry(
     rootPath: string,
     path: string,
     newStem: string,
   ): Promise<WorkspaceEntry> {
-    return invoke<WorkspaceEntry>("rename_workspace_file", {
+    return invoke<WorkspaceEntry>("rename_workspace_entry", {
       rootPath,
       path,
       newStem,
     });
   }
 
-  trashFile(rootPath: string, path: string): Promise<void> {
-    return invoke("trash_workspace_file", { rootPath, path });
+  trashEntry(rootPath: string, path: string): Promise<void> {
+    return invoke("trash_workspace_entry", { rootPath, path });
   }
 
   updateProjectViewState(

@@ -123,6 +123,15 @@ export function isPathWithinRoot(path: string, rootPath: string): boolean {
   return path === normalizedRoot || path.startsWith(`${normalizedRoot}${separator}`);
 }
 
+export function replacePathPrefix(
+  path: string,
+  previousPrefix: string,
+  nextPrefix: string,
+): string {
+  if (!isPathWithinRoot(path, previousPrefix)) return path;
+  return `${nextPrefix}${path.slice(previousPrefix.length)}`;
+}
+
 export function findRootPathForFile(
   roots: RootWorkspace[],
   path: string,

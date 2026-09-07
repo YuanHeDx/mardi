@@ -5,6 +5,7 @@ import {
   findRootPathForFile,
   flattenMarkdownFiles,
   isPathWithinRoot,
+  replacePathPrefix,
   setDirectoryExpanded,
   viewStateForProject,
   type RootWorkspace,
@@ -62,6 +63,23 @@ describe("workspace models", () => {
     expect(isPathWithinRoot("/notes/a.md", "/notes")).toBe(true);
     expect(isPathWithinRoot("/notes-old/a.md", "/notes")).toBe(false);
     expect(findRootPathForFile(roots, "/notes/work/a.md")).toBe("/notes/work");
+  });
+
+  it("moves an entry path and all descendant paths to a renamed folder", () => {
+    expect(
+      replacePathPrefix(
+        "/notes/archive/2026/plan.md",
+        "/notes/archive",
+        "/notes/history",
+      ),
+    ).toBe("/notes/history/2026/plan.md");
+    expect(
+      replacePathPrefix(
+        "/notes/archive-old/plan.md",
+        "/notes/archive",
+        "/notes/history",
+      ),
+    ).toBe("/notes/archive-old/plan.md");
   });
 
   it("splits the editable file stem from its fixed extension", () => {

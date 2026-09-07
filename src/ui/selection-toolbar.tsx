@@ -1,0 +1,155 @@
+import { Check, MessageSquareText, Quote, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  buildAnnotationPrompt,
+  buildReferencePrompt,
+} from "../core/selection-prompt";
+import { copyPlainText } from "../infrastructure/clipboard";
+
+export interface TextSelection {
+  text: string;
+  anchor: {
+    x: number;
+    top: number;
+    bottom: number;
+  };
+}
+
+interface SelectionToolbarProps {
+  filePath: string;
+  selection: TextSelection;
+  onDismiss: () => void;
+}
+
+export function SelectionToolbar({
+  filePath,
+  selection,
+  onDismiss,
+}: SelectionToolbarProps) {
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [mode, setMode] = useState<"actions" | "annotation">("actions");
+  const [annotation, setAnnotation] = useState("");
+  const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
+  const width = mode === "annotation" ? 360 : 164;
+  const estimatedHeight = mode === "annotation" ? 120 : 42;
+  const left = Math.max(
+    width / 2 + 8,
+    Math.min(selection.anchor.x, window.innerWidth - width / 2 - 8),
+  );
+  const placeBelow = selection.anchor.top < estimatedHeight + 10;
+  const top = placeBelow
+    ? selection.anchor.bottom + 8
+    : selection.anchor.top - 8;
+
+  useEffect(() => {
+    setMode("actions");
+    setAnnotation("");
+    setStatus("idle");
+  }, [filePath, selection.text, selection.anchor.x, selection.anchor.top]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!toolbarRef.current?.contains(event.target as Node)) onDismiss();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onDismiss();
+    };
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onDismiss]);
+
+  const copyPrompt = async (prompt: string) => {
+    try {
+      await copyPlainText(prompt);
+      setStatus("copied");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div
+      aria-label="文本选区操作"
+      className={`selection-toolbar ${placeBelow ? "is-below" : ""}`}
+      ref={toolbarRef}
+      role="toolbar"
+      style={{ left, top, width }}
+    >
+      {mode === "actions" ? (
+        <>
+          <button
+            onClick={() =>
+              void copyPrompt(
+                buildReferencePrompt({
+                  filePath,
+                  selectedText: selection.text,
+                }),
+              )
+            }
+            type="button"
+          >
+            <Quote />
+            引用
+          </button>
+          <button onClick={() => setMode("annotation")} type="button">
+            <MessageSquareText />
+            批注
+          </button>
+        </>
+      ) : (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!annotation.trim()) return;
+            void copyPrompt(
+              buildAnnotationPrompt({
+                annotation: annotation.trim(),
+                filePath,
+                selectedText: selection.text,
+              }),
+            );
+          }}
+        >
+          <div className="selection-annotation-header">
+            <span>添加批注</span>
+            <button aria-label="关闭批注" onClick={onDismiss} type="button">
+              <X />
+            </button>
+          </div>
+          <div className="selection-annotation-input">
+            <textarea
+              aria-label="批注内容"
+              autoFocus
+              onChange={(event) => {
+                setAnnotation(event.target.value);
+                setStatus("idle");
+              }}
+              placeholder="输入要交给 AI 的要求…"
+              rows={2}
+              value={annotation}
+            />
+            <button
+              aria-label="复制批注"
+              disabled={!annotation.trim()}
+              title="复制到剪贴板"
+              type="submit"
+            >
+              <Check />
+            </button>
+          </div>
+        </form>
+      )}
+      <span aria-live="polite" className="selection-copy-status">
+        {status === "copied"
+          ? "已复制"
+          : status === "error"
+            ? "复制失败"
+            : ""}
+      </span>
+    </div>
+  );
+}

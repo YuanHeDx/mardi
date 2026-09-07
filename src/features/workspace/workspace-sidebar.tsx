@@ -1,6 +1,7 @@
 import {
   ChevronDown,
   ChevronRight,
+  Copy,
   FileImage,
   FilePlus2,
   FileText,
@@ -12,12 +13,14 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState, type MouseEvent } from "react";
 import {
   fileNameParts,
   type RootWorkspace,
   type WorkspaceEntry,
 } from "../../core/workspace";
+import { copyPlainText } from "../../infrastructure/clipboard";
+import { ContextMenu, type ContextMenuItem } from "../../ui/context-menu";
 
 interface WorkspaceSidebarProps {
   roots: RootWorkspace[];
@@ -57,6 +60,7 @@ type EditingState =
     };
 
 interface InlineNameEditorProps {
+  entryKind: WorkspaceEntry["kind"];
   indentation: number;
   initialValue: string;
   extension: string;
@@ -65,6 +69,7 @@ interface InlineNameEditorProps {
 }
 
 function InlineNameEditor({
+  entryKind,
   indentation,
   initialValue,
   extension,
@@ -92,7 +97,11 @@ function InlineNameEditor({
       className="tree-row tree-inline-editor"
       style={{ paddingLeft: indentation }}
     >
-      <FileText className="tree-main-icon" />
+      {entryKind === "directory" ? (
+        <Folder className="tree-main-icon" />
+      ) : (
+        <FileText className="tree-main-icon" />
+      )}
       <input
         aria-label="文件名"
         autoFocus
@@ -130,10 +139,7 @@ interface TreeEntryProps {
   level: number;
   collapsedPaths: Set<string>;
   editing: EditingState | null;
-  canManageFiles: boolean;
   onCancelEditing: () => void;
-  onStartCreate: (rootPath: string, parentPath: string) => void;
-  onStartRename: (rootPath: string, entry: WorkspaceEntry) => void;
   onCreateFile: (
     rootPath: string,
     parentPath: string,
@@ -144,7 +150,11 @@ interface TreeEntryProps {
     rootPath: string,
     newStem: string,
   ) => Promise<boolean>;
-  onDeleteFile: (entry: WorkspaceEntry, rootPath: string) => Promise<boolean>;
+  onOpenContextMenu: (
+    event: MouseEvent,
+    entry: WorkspaceEntry,
+    rootPath: string,
+  ) => void;
   onToggle: (rootPath: string, path: string) => void;
   onSelectEntry: (entry: WorkspaceEntry, rootPath: string) => void;
 }
@@ -156,13 +166,10 @@ function TreeEntry({
   level,
   collapsedPaths,
   editing,
-  canManageFiles,
   onCancelEditing,
-  onStartCreate,
-  onStartRename,
   onCreateFile,
   onRenameFile,
-  onDeleteFile,
+  onOpenContextMenu,
   onToggle,
   onSelectEntry,
 }: TreeEntryProps) {
@@ -173,6 +180,25 @@ function TreeEntry({
   const isRenaming =
     editing?.mode === "rename" && editing.entry.path === entry.path;
 
+  if (isRenaming) {
+    const { stem, extension } =
+      entry.kind === "directory"
+        ? { stem: entry.name, extension: "" }
+        : fileNameParts(entry.name);
+    return (
+      <li>
+        <InlineNameEditor
+          entryKind={entry.kind}
+          extension={extension}
+          indentation={indentation + 18}
+          initialValue={stem}
+          onCancel={onCancelEditing}
+          onSubmit={(newStem) => onRenameFile(entry, rootPath, newStem)}
+        />
+      </li>
+    );
+  }
+
   if (entry.kind === "directory") {
     return (
       <li>
@@ -182,6 +208,9 @@ function TreeEntry({
             className="tree-row"
             style={{ paddingLeft: indentation }}
             onClick={() => onToggle(rootPath, entry.path)}
+            onContextMenu={(event) =>
+              onOpenContextMenu(event, entry, rootPath)
+            }
             title={entry.path}
             type="button"
           >
@@ -189,18 +218,6 @@ function TreeEntry({
             <Folder className="tree-main-icon" />
             <span>{entry.name}</span>
           </button>
-          {canManageFiles ? (
-            <div className="tree-row-actions">
-              <button
-                aria-label={`在 ${entry.name} 中新建 Markdown`}
-                onClick={() => onStartCreate(rootPath, entry.path)}
-                title="新建 Markdown"
-                type="button"
-              >
-                <FilePlus2 />
-              </button>
-            </div>
-          ) : null}
         </div>
         {!isCollapsed ? (
           <ul>
@@ -208,6 +225,7 @@ function TreeEntry({
               <li>
                 <InlineNameEditor
                   extension=".md"
+                  entryKind="markdown"
                   indentation={indentation + 34}
                   initialValue="未命名"
                   onCancel={onCancelEditing}
@@ -220,7 +238,6 @@ function TreeEntry({
             {entry.children.map((child) => (
               <TreeEntry
                 activePath={activePath}
-                canManageFiles={canManageFiles}
                 collapsedPaths={collapsedPaths}
                 editing={editing}
                 entry={child}
@@ -228,32 +245,15 @@ function TreeEntry({
                 level={level + 1}
                 onCancelEditing={onCancelEditing}
                 onCreateFile={onCreateFile}
-                onDeleteFile={onDeleteFile}
+                onOpenContextMenu={onOpenContextMenu}
                 onRenameFile={onRenameFile}
                 onSelectEntry={onSelectEntry}
-                onStartCreate={onStartCreate}
-                onStartRename={onStartRename}
                 onToggle={onToggle}
                 rootPath={rootPath}
               />
             ))}
           </ul>
         ) : null}
-      </li>
-    );
-  }
-
-  if (isRenaming) {
-    const { stem, extension } = fileNameParts(entry.name);
-    return (
-      <li>
-        <InlineNameEditor
-          extension={extension}
-          indentation={indentation + 18}
-          initialValue={stem}
-          onCancel={onCancelEditing}
-          onSubmit={(newStem) => onRenameFile(entry, rootPath, newStem)}
-        />
       </li>
     );
   }
@@ -265,32 +265,15 @@ function TreeEntry({
           className={`tree-row tree-file ${activePath === entry.path ? "is-active" : ""}`}
           style={{ paddingLeft: indentation + 18 }}
           onClick={() => onSelectEntry(entry, rootPath)}
+          onContextMenu={(event) =>
+            onOpenContextMenu(event, entry, rootPath)
+          }
           title={entry.path}
           type="button"
         >
           <FileIcon entry={entry} />
           <span>{entry.name}</span>
         </button>
-        {canManageFiles ? (
-          <div className="tree-row-actions">
-            <button
-              aria-label={`重命名 ${entry.name}`}
-              onClick={() => onStartRename(rootPath, entry)}
-              title="重命名"
-              type="button"
-            >
-              <Pencil />
-            </button>
-            <button
-              aria-label={`删除 ${entry.name}`}
-              onClick={() => void onDeleteFile(entry, rootPath)}
-              title="移到废纸篓"
-              type="button"
-            >
-              <Trash2 />
-            </button>
-          </div>
-        ) : null}
       </div>
     </li>
   );
@@ -300,14 +283,15 @@ interface RootEntryProps {
   workspace: RootWorkspace;
   activePath: string | null;
   editing: EditingState | null;
-  canManageFiles: boolean;
   onCancelEditing: () => void;
-  onStartCreate: (rootPath: string, parentPath: string) => void;
-  onStartRename: (rootPath: string, entry: WorkspaceEntry) => void;
   onCreateFile: WorkspaceSidebarProps["onCreateFile"];
   onRenameFile: WorkspaceSidebarProps["onRenameFile"];
-  onDeleteFile: WorkspaceSidebarProps["onDeleteFile"];
-  onRemoveRoot: (rootPath: string) => void;
+  onOpenRootContextMenu: (event: MouseEvent, workspace: RootWorkspace) => void;
+  onOpenEntryContextMenu: (
+    event: MouseEvent,
+    entry: WorkspaceEntry,
+    rootPath: string,
+  ) => void;
   onRetryRoot: (rootPath: string) => void;
   onSelectEntry: (entry: WorkspaceEntry, rootPath: string) => void;
   onTogglePath: (rootPath: string, path: string) => void;
@@ -318,14 +302,11 @@ function RootEntry({
   workspace,
   activePath,
   editing,
-  canManageFiles,
   onCancelEditing,
-  onStartCreate,
-  onStartRename,
   onCreateFile,
   onRenameFile,
-  onDeleteFile,
-  onRemoveRoot,
+  onOpenRootContextMenu,
+  onOpenEntryContextMenu,
   onRetryRoot,
   onSelectEntry,
   onTogglePath,
@@ -343,6 +324,7 @@ function RootEntry({
           aria-expanded={workspace.isExpanded}
           className="root-main"
           onClick={() => onToggleRoot(workspace)}
+          onContextMenu={(event) => onOpenRootContextMenu(event, workspace)}
           title={root.rootPath}
           type="button"
         >
@@ -353,26 +335,6 @@ function RootEntry({
             <Folder className="tree-main-icon" />
           )}
           <span>{root.name}</span>
-        </button>
-        {canManageFiles ? (
-          <button
-            aria-label={`在 ${root.name} 中新建 Markdown`}
-            className="root-action"
-            onClick={() => onStartCreate(root.rootPath, root.rootPath)}
-            title="新建 Markdown"
-            type="button"
-          >
-            <FilePlus2 />
-          </button>
-        ) : null}
-        <button
-          aria-label={`从列表移除 ${root.name}`}
-          className="root-action"
-          onClick={() => onRemoveRoot(root.rootPath)}
-          title="仅从列表移除，不会删除文件"
-          type="button"
-        >
-          <X />
         </button>
       </div>
 
@@ -396,6 +358,7 @@ function RootEntry({
                 <li>
                   <InlineNameEditor
                     extension=".md"
+                    entryKind="markdown"
                     indentation={32}
                     initialValue="未命名"
                     onCancel={onCancelEditing}
@@ -408,7 +371,6 @@ function RootEntry({
               {workspace.entries?.map((entry) => (
                 <TreeEntry
                   activePath={activePath}
-                  canManageFiles={canManageFiles}
                   collapsedPaths={collapsedPaths}
                   editing={editing}
                   entry={entry}
@@ -416,11 +378,9 @@ function RootEntry({
                   level={0}
                   onCancelEditing={onCancelEditing}
                   onCreateFile={onCreateFile}
-                  onDeleteFile={onDeleteFile}
+                  onOpenContextMenu={onOpenEntryContextMenu}
                   onRenameFile={onRenameFile}
                   onSelectEntry={onSelectEntry}
-                  onStartCreate={onStartCreate}
-                  onStartRename={onStartRename}
                   onToggle={onTogglePath}
                   rootPath={root.rootPath}
                 />
@@ -455,6 +415,40 @@ export function WorkspaceSidebar({
   onDeleteFile,
 }: WorkspaceSidebarProps) {
   const [editing, setEditing] = useState<EditingState | null>(null);
+  const [contextMenu, setContextMenu] = useState<
+    | {
+        position: { x: number; y: number };
+        target:
+          | { type: "root"; workspace: RootWorkspace }
+          | { type: "entry"; entry: WorkspaceEntry; rootPath: string };
+      }
+    | null
+  >(null);
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const openRootContextMenu = (
+    event: MouseEvent,
+    workspace: RootWorkspace,
+  ) => {
+    event.preventDefault();
+    setContextMenu({
+      position: { x: event.clientX, y: event.clientY },
+      target: { type: "root", workspace },
+    });
+  };
+
+  const openEntryContextMenu = (
+    event: MouseEvent,
+    entry: WorkspaceEntry,
+    rootPath: string,
+  ) => {
+    event.preventDefault();
+    setContextMenu({
+      position: { x: event.clientX, y: event.clientY },
+      target: { type: "entry", entry, rootPath },
+    });
+  };
 
   const startCreate = (rootPath: string, parentPath: string) => {
     const workspace = roots.find((item) => item.root.rootPath === rootPath);
@@ -513,22 +507,17 @@ export function WorkspaceSidebar({
             {roots.map((workspace) => (
               <RootEntry
                 activePath={activePath}
-                canManageFiles={canManageFiles}
                 editing={
                   editing?.rootPath === workspace.root.rootPath ? editing : null
                 }
                 key={workspace.root.rootPath}
                 onCancelEditing={() => setEditing(null)}
                 onCreateFile={submitCreate}
-                onDeleteFile={onDeleteFile}
-                onRemoveRoot={onRemoveRoot}
+                onOpenEntryContextMenu={openEntryContextMenu}
+                onOpenRootContextMenu={openRootContextMenu}
                 onRenameFile={submitRename}
                 onRetryRoot={onRetryRoot}
                 onSelectEntry={onSelectEntry}
-                onStartCreate={startCreate}
-                onStartRename={(rootPath, entry) =>
-                  setEditing({ mode: "rename", rootPath, entry })
-                }
                 onTogglePath={onTogglePath}
                 onToggleRoot={onToggleRoot}
                 workspace={workspace}
@@ -542,6 +531,80 @@ export function WorkspaceSidebar({
           <span>打开过的文件夹会保留在这里</span>
         </div>
       )}
+
+      {contextMenu ? (
+        <ContextMenu
+          items={(() => {
+            const target = contextMenu.target;
+            if (target.type === "root") {
+              const items: ContextMenuItem[] = [];
+              if (canManageFiles) {
+                items.push({
+                  icon: <FilePlus2 />,
+                  label: "新建 Markdown",
+                  onSelect: () =>
+                    startCreate(
+                      target.workspace.root.rootPath,
+                      target.workspace.root.rootPath,
+                    ),
+                });
+              }
+              items.push({
+                icon: <Copy />,
+                label: "复制路径",
+                onSelect: () => copyPlainText(target.workspace.root.rootPath),
+              });
+              if (canManageFiles) {
+                items.push({
+                  icon: <X />,
+                  label: "从列表移除",
+                  onSelect: () => onRemoveRoot(target.workspace.root.rootPath),
+                  separatorBefore: true,
+                });
+              }
+              return items;
+            }
+
+            const { entry, rootPath } = target;
+            const items: ContextMenuItem[] = [];
+            if (canManageFiles && entry.kind === "directory") {
+              items.push({
+                icon: <FilePlus2 />,
+                label: "新建 Markdown",
+                onSelect: () => startCreate(rootPath, entry.path),
+              });
+            }
+            if (canManageFiles) {
+              items.push({
+                icon: <Pencil />,
+                label: "重命名",
+                onSelect: () =>
+                  setEditing({ mode: "rename", rootPath, entry }),
+              });
+            }
+            items.push({
+              icon: <Copy />,
+              label: "复制路径",
+              onSelect: () => copyPlainText(entry.path),
+            });
+            if (canManageFiles) {
+              items.push({
+                danger: true,
+                icon: <Trash2 />,
+                label: "移到废纸篓",
+                onSelect: async () => {
+                  await onDeleteFile(entry, rootPath);
+                },
+                separatorBefore: true,
+              });
+            }
+            return items;
+          })()}
+          label="文件操作"
+          onClose={closeContextMenu}
+          position={contextMenu.position}
+        />
+      ) : null}
     </aside>
   );
 }

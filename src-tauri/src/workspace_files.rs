@@ -82,15 +82,18 @@ fn is_supported_file(path: &Path) -> bool {
     )
 }
 
-fn canonical_supported_file(path: &Path, root: &Path) -> Result<PathBuf, String> {
+fn canonical_workspace_entry(path: &Path, root: &Path) -> Result<PathBuf, String> {
     let metadata = fs::symlink_metadata(path).map_err(error_message)?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err("只能操作文件列表中的普通文件".into());
+    if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err("只能操作文件列表中的普通文件或文件夹".into());
     }
 
     let path = path.canonicalize().map_err(error_message)?;
     require_within_root(&path, root)?;
-    if !is_supported_file(&path) {
+    if path == root {
+        return Err("不能操作项目根目录".into());
+    }
+    if path.is_file() && !is_supported_file(&path) {
         return Err("该文件类型不受 mardi 支持".into());
     }
     Ok(path)
@@ -128,20 +131,24 @@ pub(crate) fn create_markdown_file(
     target.canonicalize().map_err(error_message)
 }
 
-pub(crate) fn rename_file(root: &Path, source: &Path, new_stem: &str) -> Result<PathBuf, String> {
+pub(crate) fn rename_entry(root: &Path, source: &Path, new_name: &str) -> Result<PathBuf, String> {
     let root = canonical_root(root)?;
-    let source = canonical_supported_file(source, &root)?;
-    let new_stem = validate_leaf_name(new_stem)?;
-    let extension = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .ok_or_else(|| "无法识别文件扩展名".to_string())?;
-    let new_name = format!("{new_stem}.{extension}");
-    validate_leaf_name(&new_name)?;
+    let source = canonical_workspace_entry(source, &root)?;
+    let requested_name = validate_leaf_name(new_name)?;
+    let target_name = if source.is_dir() {
+        requested_name.to_owned()
+    } else {
+        let extension = source
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .ok_or_else(|| "无法识别文件扩展名".to_string())?;
+        format!("{requested_name}.{extension}")
+    };
+    validate_leaf_name(&target_name)?;
     let target = source
         .parent()
         .ok_or_else(|| "无法确定文件所在目录".to_string())?
-        .join(new_name);
+        .join(target_name);
     require_within_root(&target, &root)?;
 
     if target == source {
@@ -158,15 +165,15 @@ pub(crate) fn rename_file(root: &Path, source: &Path, new_stem: &str) -> Result<
     target.canonicalize().map_err(error_message)
 }
 
-pub(crate) fn move_file_to_trash(root: &Path, source: &Path) -> Result<(), String> {
+pub(crate) fn move_entry_to_trash(root: &Path, source: &Path) -> Result<(), String> {
     let root = canonical_root(root)?;
-    let source = canonical_supported_file(source, &root)?;
+    let source = canonical_workspace_entry(source, &root)?;
     trash::delete(&source).map_err(error_message)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{create_markdown_file, rename_file};
+    use super::{create_markdown_file, move_entry_to_trash, rename_entry};
     use std::fs;
     use tempfile::tempdir;
 
@@ -193,7 +200,7 @@ mod tests {
         let original = root.path().join("old.markdown");
         fs::write(&original, "hello").unwrap();
 
-        let renamed = rename_file(root.path(), &original, "new.name").unwrap();
+        let renamed = rename_entry(root.path(), &original, "new.name").unwrap();
         assert_eq!(renamed.file_name().unwrap(), "new.name.markdown");
         assert_eq!(fs::read_to_string(renamed).unwrap(), "hello");
     }
@@ -203,7 +210,35 @@ mod tests {
         let root = tempdir().unwrap();
         let unsupported = root.path().join("notes.txt");
         fs::write(&unsupported, "hello").unwrap();
-        assert!(rename_file(root.path(), &unsupported, "renamed").is_err());
+        assert!(rename_entry(root.path(), &unsupported, "renamed").is_err());
         assert!(create_markdown_file(root.path(), root.path(), ".hidden").is_err());
+    }
+
+    #[test]
+    fn renames_directories_and_keeps_their_contents() {
+        let root = tempdir().unwrap();
+        let original = root.path().join("drafts");
+        fs::create_dir(&original).unwrap();
+        fs::write(original.join("note.md"), "hello").unwrap();
+
+        let renamed = rename_entry(root.path(), &original, "archive").unwrap();
+        assert_eq!(renamed.file_name().unwrap(), "archive");
+        assert_eq!(
+            fs::read_to_string(renamed.join("note.md")).unwrap(),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn refuses_to_rename_the_project_root() {
+        let root = tempdir().unwrap();
+        assert!(rename_entry(root.path(), root.path(), "other").is_err());
+    }
+
+    #[test]
+    fn refuses_to_trash_the_project_root() {
+        let root = tempdir().unwrap();
+        assert!(move_entry_to_trash(root.path(), root.path()).is_err());
+        assert!(root.path().exists());
     }
 }

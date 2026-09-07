@@ -121,6 +121,28 @@ fn write_document(path: String, content: String) -> Result<(), String> {
     fs::write(file_path, content).map_err(error_message)
 }
 
+#[tauri::command]
+#[cfg(target_os = "macos")]
+fn copy_text_to_clipboard(text: String) -> Result<(), String> {
+    use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+    use objc2_foundation::NSString;
+
+    let pasteboard = NSPasteboard::generalPasteboard();
+    pasteboard.clearContents();
+    let plain_text_type = unsafe { NSPasteboardTypeString };
+    if pasteboard.setString_forType(&NSString::from_str(&text), plain_text_type) {
+        Ok(())
+    } else {
+        Err("无法写入系统剪贴板".into())
+    }
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+fn copy_text_to_clipboard(_text: String) -> Result<(), String> {
+    Err("当前系统暂不支持写入剪贴板".into())
+}
+
 fn list_entries(
     directory: &Path,
     depth: usize,
@@ -257,8 +279,12 @@ fn require_known_root(app: &tauri::AppHandle, root_path: &str) -> Result<PathBuf
     Ok(root)
 }
 
-fn workspace_entry_for_file(path: PathBuf) -> Result<WorkspaceEntry, String> {
-    let kind = file_kind(&path).ok_or_else(|| "该文件类型不受 mardi 支持".to_string())?;
+fn workspace_entry_for_path(path: PathBuf) -> Result<WorkspaceEntry, String> {
+    let kind = if path.is_dir() {
+        FileKind::Directory
+    } else {
+        file_kind(&path).ok_or_else(|| "该文件类型不受 mardi 支持".to_string())?
+    };
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -281,29 +307,29 @@ fn create_workspace_markdown(
 ) -> Result<WorkspaceEntry, String> {
     let root = require_known_root(&app, &root_path)?;
     workspace_files::create_markdown_file(&root, Path::new(&parent_path), &name)
-        .and_then(workspace_entry_for_file)
+        .and_then(workspace_entry_for_path)
 }
 
 #[tauri::command]
-fn rename_workspace_file(
+fn rename_workspace_entry(
     app: tauri::AppHandle,
     root_path: String,
     path: String,
     new_stem: String,
 ) -> Result<WorkspaceEntry, String> {
     let root = require_known_root(&app, &root_path)?;
-    workspace_files::rename_file(&root, Path::new(&path), &new_stem)
-        .and_then(workspace_entry_for_file)
+    workspace_files::rename_entry(&root, Path::new(&path), &new_stem)
+        .and_then(workspace_entry_for_path)
 }
 
 #[tauri::command]
-fn trash_workspace_file(
+fn trash_workspace_entry(
     app: tauri::AppHandle,
     root_path: String,
     path: String,
 ) -> Result<(), String> {
     let root = require_known_root(&app, &root_path)?;
-    workspace_files::move_file_to_trash(&root, Path::new(&path))
+    workspace_files::move_entry_to_trash(&root, Path::new(&path))
 }
 
 #[tauri::command]
@@ -404,13 +430,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_document,
             write_document,
+            copy_text_to_clipboard,
             list_project_roots,
             remember_project_root,
             forget_project_root,
             list_workspace,
             create_workspace_markdown,
-            rename_workspace_file,
-            trash_workspace_file,
+            rename_workspace_entry,
+            trash_workspace_entry,
             update_project_view_state,
             read_local_image
         ])

@@ -6,6 +6,8 @@ import type {
   WorkspaceSnapshot,
 } from "../../core/workspace";
 import {
+  isPathWithinRoot,
+  replacePathPrefix,
   setDirectoryExpanded,
   viewStateForProject,
 } from "../../core/workspace";
@@ -272,13 +274,26 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
     [loadRoot],
   );
 
-  const renameFile = useCallback(
+  const renameEntry = useCallback(
     async (rootPath: string, path: string, newStem: string) => {
       try {
-        const entry = await workspaceGateway.renameFile(
+        const entry = await workspaceGateway.renameEntry(
           rootPath,
           path,
           newStem,
+        );
+        setRoots((current) =>
+          current.map((workspace) => {
+            if (workspace.root.rootPath !== rootPath) return workspace;
+            const collapsedPaths = workspace.collapsedPaths.map((item) =>
+              replacePathPrefix(item, path, entry.path),
+            );
+            persistViewState(rootPath, {
+              isExpanded: workspace.isExpanded,
+              collapsedPaths,
+            });
+            return { ...workspace, collapsedPaths };
+          }),
         );
         await loadRoot(rootPath);
         setError(null);
@@ -288,13 +303,26 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
         return null;
       }
     },
-    [loadRoot],
+    [loadRoot, persistViewState],
   );
 
-  const trashFile = useCallback(
+  const trashEntry = useCallback(
     async (rootPath: string, path: string) => {
       try {
-        await workspaceGateway.trashFile(rootPath, path);
+        await workspaceGateway.trashEntry(rootPath, path);
+        setRoots((current) =>
+          current.map((workspace) => {
+            if (workspace.root.rootPath !== rootPath) return workspace;
+            const collapsedPaths = workspace.collapsedPaths.filter(
+              (item) => !isPathWithinRoot(item, path),
+            );
+            persistViewState(rootPath, {
+              isExpanded: workspace.isExpanded,
+              collapsedPaths,
+            });
+            return { ...workspace, collapsedPaths };
+          }),
+        );
         await loadRoot(rootPath);
         setError(null);
         return true;
@@ -303,7 +331,7 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
         return false;
       }
     },
-    [loadRoot],
+    [loadRoot, persistViewState],
   );
 
   return {
@@ -316,8 +344,8 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
       setPathExpanded(rootPath, path, true),
     removeRoot,
     createFile,
-    renameFile,
-    trashFile,
+    renameEntry,
+    trashEntry,
     retryRoot: loadRoot,
     dismissError: () => setError(null),
   };

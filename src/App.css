@@ -218,38 +218,7 @@ button {
   white-space: nowrap;
 }
 
-.root-action {
-  display: none;
-  width: 28px;
-  height: 28px;
-  flex: none;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-faint);
-  cursor: default;
-}
-
-.root-row:hover .root-action,
-.root-row:has(.root-main:focus-visible) .root-action,
-.root-row:has(.root-action:focus-visible) .root-action {
-  display: grid;
-}
-
-.root-action:hover {
-  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
-  color: var(--text-primary);
-}
-
-.root-action svg {
-  width: 13px;
-  height: 13px;
-}
-
 .root-main:focus-visible,
-.root-action:focus-visible,
 .root-error:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -318,51 +287,6 @@ button.root-message {
   flex: 1;
 }
 
-.tree-row-actions {
-  position: absolute;
-  right: 3px;
-  display: none;
-  align-items: center;
-  flex: none;
-  padding-left: 4px;
-  padding-right: 3px;
-  border-radius: 4px;
-  background: var(--sidebar-hover);
-}
-
-.tree-row-shell:hover .tree-row-actions,
-.tree-row-shell:has(.tree-row:focus-visible) .tree-row-actions,
-.tree-row-shell:has(.tree-row-actions button:focus-visible) .tree-row-actions {
-  display: flex;
-}
-
-.tree-row-actions button {
-  display: grid;
-  width: 25px;
-  height: 25px;
-  padding: 0;
-  place-items: center;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-faint);
-}
-
-.tree-row-actions button:hover {
-  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
-  color: var(--text-primary);
-}
-
-.tree-row-actions button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
-
-.tree-row-actions svg {
-  width: 13px;
-  height: 13px;
-}
-
 .tree-row:hover,
 .tree-row-shell:hover > .tree-row,
 .tree-row-shell:has(.tree-row:focus-visible) > .tree-row {
@@ -423,6 +347,184 @@ button.root-message {
   overflow: visible;
   color: var(--text-muted);
   text-overflow: clip;
+}
+
+.context-menu {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  width: 196px;
+  padding: 5px;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--window-background) 97%, transparent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(18px);
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 31px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+}
+
+.context-menu button:hover,
+.context-menu button:focus-visible {
+  outline: 0;
+  background: var(--sidebar-selected);
+}
+
+.context-menu button.has-separator {
+  height: 36px;
+  margin-top: 3px;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0 0 4px 4px;
+}
+
+.context-menu button.is-danger {
+  color: var(--error-text);
+}
+
+.context-menu svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  stroke-width: 1.7;
+}
+
+.selection-toolbar {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  min-height: 40px;
+  padding: 4px;
+  transform: translate(-50%, -100%);
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--window-background) 97%, transparent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.17);
+  backdrop-filter: blur(18px);
+}
+
+.selection-toolbar.is-below {
+  transform: translate(-50%, 0);
+}
+
+.selection-toolbar > button {
+  display: flex;
+  height: 32px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.selection-toolbar > button:hover,
+.selection-toolbar > button:focus-visible {
+  outline: 0;
+  background: var(--sidebar-selected);
+}
+
+.selection-toolbar svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.8;
+}
+
+.selection-toolbar form {
+  width: 100%;
+}
+
+.selection-annotation-header {
+  display: flex;
+  height: 28px;
+  padding: 0 2px 0 7px;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.selection-annotation-header button,
+.selection-annotation-input button {
+  display: grid;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.selection-annotation-header button {
+  width: 24px;
+  height: 24px;
+}
+
+.selection-annotation-header button:hover,
+.selection-annotation-input button:hover:not(:disabled) {
+  background: var(--sidebar-hover);
+  color: var(--text-primary);
+}
+
+.selection-annotation-input {
+  display: flex;
+  gap: 5px;
+  align-items: stretch;
+}
+
+.selection-annotation-input textarea {
+  min-width: 0;
+  min-height: 58px;
+  flex: 1;
+  resize: none;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: 0;
+  background: var(--document-background);
+  color: var(--text-primary);
+  font: 12px/1.45 var(--ui-font);
+  user-select: text;
+}
+
+.selection-annotation-input textarea:focus {
+  border-color: var(--accent);
+}
+
+.selection-annotation-input button {
+  width: 36px;
+}
+
+.selection-annotation-input button:disabled {
+  opacity: 0.3;
+}
+
+.selection-copy-status {
+  position: absolute;
+  right: 7px;
+  bottom: -20px;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
 }
 
 .sidebar-empty {

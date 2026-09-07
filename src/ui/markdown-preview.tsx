@@ -1,20 +1,23 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useRef, type MouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import type { DocumentSnapshot } from "../core/document";
 import { documentGateway } from "../infrastructure/tauri/document-gateway";
 import { isTauriRuntime } from "../infrastructure/tauri/runtime";
 import { markdownRenderer } from "../services/markdown-renderer";
+import type { TextSelection } from "./selection-toolbar";
 
 interface MarkdownPreviewProps {
   content: string;
   document: DocumentSnapshot | null;
   workspaceRoot: string | null;
+  onTextSelection?: (selection: TextSelection | null) => void;
 }
 
 export function MarkdownPreview({
   content,
   document,
   workspaceRoot,
+  onTextSelection,
 }: MarkdownPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const rendered = useMemo(() => markdownRenderer.render(content), [content]);
@@ -60,8 +63,55 @@ export function MarkdownPreview({
     }
   };
 
+  const reportSelection = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      if (window.document.activeElement?.closest(".selection-toolbar")) return;
+      const selection = window.getSelection();
+      const anchorNode = selection?.anchorNode;
+      const focusNode = selection?.focusNode;
+      if (
+        !selection ||
+        selection.isCollapsed ||
+        !anchorNode ||
+        !focusNode ||
+        !containerRef.current?.contains(anchorNode) ||
+        !containerRef.current.contains(focusNode)
+      ) {
+        onTextSelection?.(null);
+        return;
+      }
+
+      const text = selection.toString().trim();
+      const rect = selection.getRangeAt(0).getClientRects()[0];
+      if (!text || !rect) {
+        onTextSelection?.(null);
+        return;
+      }
+      onTextSelection?.({
+        text,
+        anchor: {
+          x: rect.left + rect.width / 2,
+          top: rect.top,
+          bottom: rect.bottom,
+        },
+      });
+    });
+  }, [onTextSelection]);
+
+  useEffect(() => {
+    window.document.addEventListener("selectionchange", reportSelection);
+    return () =>
+      window.document.removeEventListener("selectionchange", reportSelection);
+  }, [reportSelection]);
+
   return (
-    <div className="preview-scroll" onClick={handleClick}>
+    <div
+      className="preview-scroll"
+      onClick={handleClick}
+      onKeyUp={reportSelection}
+      onMouseUp={reportSelection}
+      onScroll={() => onTextSelection?.(null)}
+    >
       <article
         className="markdown-body"
         ref={containerRef}

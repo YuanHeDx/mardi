@@ -1,10 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import {
   fileKindFromPath,
   fileNameFromPath,
   findRootPathForFile,
   flattenMarkdownFiles,
+  isPathWithinRoot,
+  replacePathPrefix,
   type MediaContent,
   type WorkspaceEntry,
 } from "./core/workspace";
@@ -20,6 +22,10 @@ import {
 import { MarkdownPreview } from "./ui/markdown-preview";
 import { MediaPreview } from "./ui/media-preview";
 import { StatusBar } from "./ui/status-bar";
+import {
+  SelectionToolbar,
+  type TextSelection,
+} from "./ui/selection-toolbar";
 import { TitleBar } from "./ui/title-bar";
 import "./ui/styles/tokens.css";
 import "./ui/styles/typora-theme.css";
@@ -35,6 +41,7 @@ function App() {
   const runsInTauri = useMemo(() => isTauriRuntime(), []);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [activeMedia, setActiveMedia] = useState<MediaContent | null>(null);
+  const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
   const documentSession = useDocumentSession(
     runsInTauri ? undefined : browserDemoDocument,
   );
@@ -54,6 +61,11 @@ function App() {
     [activeDocument, workspaceSession.roots],
   );
   const visibleError = session.error ?? workspaceSession.error;
+  const dismissTextSelection = useCallback(() => setTextSelection(null), []);
+
+  useEffect(() => {
+    setTextSelection(null);
+  }, [activeDocument?.path, session.mode]);
 
   useEffect(() => {
     if (!runsInTauri) return;
@@ -124,44 +136,51 @@ function App() {
     return true;
   };
 
-  const handleRenameFile = async (
+  const handleRenameEntry = async (
     entry: WorkspaceEntry,
     rootPath: string,
     newStem: string,
   ) => {
-    const renamed = await workspaceSession.renameFile(
+    const renamed = await workspaceSession.renameEntry(
       rootPath,
       entry.path,
       newStem,
     );
     if (!renamed) return false;
 
-    if (activeDocument?.path === entry.path) {
-      documentSession.relocateDocument(renamed.path, renamed.name);
+    if (activeDocument && isPathWithinRoot(activeDocument.path, entry.path)) {
+      documentSession.relocateDocument(
+        replacePathPrefix(activeDocument.path, entry.path, renamed.path),
+        activeDocument.path === entry.path ? renamed.name : activeDocument.name,
+      );
     }
-    if (activeMedia?.path === entry.path) {
+    if (activeMedia && isPathWithinRoot(activeMedia.path, entry.path)) {
       setActiveMedia({
         ...activeMedia,
-        path: renamed.path,
-        name: renamed.name,
+        path: replacePathPrefix(activeMedia.path, entry.path, renamed.path),
+        name: activeMedia.path === entry.path ? renamed.name : activeMedia.name,
       });
     }
     return true;
   };
 
-  const handleDeleteFile = async (
+  const handleDeleteEntry = async (
     entry: WorkspaceEntry,
     rootPath: string,
   ) => {
     if (!window.confirm(`要将“${entry.name}”移到废纸篓吗？`)) return false;
 
-    const isActiveDocument = activeDocument?.path === entry.path;
-    const isActiveMedia = activeMedia?.path === entry.path;
+    const isActiveDocument = Boolean(
+      activeDocument && isPathWithinRoot(activeDocument.path, entry.path),
+    );
+    const isActiveMedia = Boolean(
+      activeMedia && isPathWithinRoot(activeMedia.path, entry.path),
+    );
     if (isActiveDocument && !documentSession.confirmDiscardChanges()) {
       return false;
     }
 
-    const didDelete = await workspaceSession.trashFile(rootPath, entry.path);
+    const didDelete = await workspaceSession.trashEntry(rootPath, entry.path);
     if (!didDelete) return false;
     if (isActiveDocument) documentSession.discardDocument();
     if (isActiveMedia) setActiveMedia(null);
@@ -191,7 +210,7 @@ function App() {
             activePath={activePath}
             canManageFiles={runsInTauri}
             onCreateFile={handleCreateFile}
-            onDeleteFile={handleDeleteFile}
+            onDeleteFile={handleDeleteEntry}
             onExpandPath={workspaceSession.expandPath}
             onOpenFile={() => void handleOpenFile()}
             onOpenFolder={() => void handleOpenFolder()}
@@ -201,7 +220,7 @@ function App() {
             onRetryRoot={(rootPath) =>
               void workspaceSession.retryRoot(rootPath)
             }
-            onRenameFile={handleRenameFile}
+            onRenameFile={handleRenameEntry}
             onSelectEntry={(entry, rootPath) =>
               void openEntry(entry, rootPath)
             }
@@ -218,6 +237,7 @@ function App() {
             <Suspense fallback={<div className="editor-loading" />}>
               <MarkdownEditor
                 onChange={documentSession.setContent}
+                onTextSelection={setTextSelection}
                 value={activeDocument.content}
               />
             </Suspense>
@@ -225,6 +245,7 @@ function App() {
             <MarkdownPreview
               content={displayContent}
               document={activeDocument}
+              onTextSelection={activeDocument ? setTextSelection : undefined}
               workspaceRoot={workspaceRoot}
             />
           )}
@@ -236,6 +257,14 @@ function App() {
         isSaving={session.isSaving}
         kind={activeMedia?.kind ?? (activeDocument ? "markdown" : null)}
       />
+
+      {activeDocument && textSelection ? (
+        <SelectionToolbar
+          filePath={activeDocument.path}
+          onDismiss={dismissTextSelection}
+          selection={textSelection}
+        />
+      ) : null}
 
       {visibleError ? (
         <div className="error-banner" role="alert">
