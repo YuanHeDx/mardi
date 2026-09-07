@@ -66,6 +66,7 @@ export const browserDemoRoots: RootWorkspace[] = [
     isLoading: false,
     isTruncated: false,
     error: null,
+    collapsedPaths: [],
   },
   {
     root: {
@@ -78,5 +79,6 @@ export const browserDemoRoots: RootWorkspace[] = [
     isLoading: false,
     isTruncated: false,
     error: null,
+    collapsedPaths: [],
   },
 ];

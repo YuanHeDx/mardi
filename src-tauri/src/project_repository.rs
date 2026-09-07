@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -8,6 +9,14 @@ use tauri::{AppHandle, Manager};
 
 const STORE_VERSION: u32 = 1;
 const STORE_FILE_NAME: &str = "project-roots-v1.json";
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectViewStatePayload {
+    pub(crate) is_expanded: bool,
+    pub(crate) collapsed_paths: Vec<String>,
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +24,8 @@ pub(crate) struct ProjectRootPayload {
     pub(crate) root_path: String,
     pub(crate) name: String,
     pub(crate) last_opened_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) view_state: Option<ProjectViewStatePayload>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -78,10 +89,12 @@ fn timestamp_millis() -> u64 {
 }
 
 pub(crate) fn list(app: &AppHandle) -> Result<Vec<ProjectRootPayload>, String> {
+    let _guard = STORE_LOCK.lock().map_err(error_message)?;
     Ok(read_store(app)?.roots)
 }
 
 pub(crate) fn contains(app: &AppHandle, root: &Path) -> Result<bool, String> {
+    let _guard = STORE_LOCK.lock().map_err(error_message)?;
     let root_path = root.to_string_lossy();
     Ok(read_store(app)?
         .roots
@@ -90,7 +103,14 @@ pub(crate) fn contains(app: &AppHandle, root: &Path) -> Result<bool, String> {
 }
 
 pub(crate) fn remember(app: &AppHandle, root: &Path) -> Result<ProjectRootPayload, String> {
+    let _guard = STORE_LOCK.lock().map_err(error_message)?;
     let root_path = root.to_string_lossy().into_owned();
+    let mut store = read_store(app)?;
+    let previous_view_state = store
+        .roots
+        .iter()
+        .find(|item| item.root_path == root_path)
+        .and_then(|item| item.view_state.clone());
     let project = ProjectRootPayload {
         name: root
             .file_name()
@@ -99,9 +119,14 @@ pub(crate) fn remember(app: &AppHandle, root: &Path) -> Result<ProjectRootPayloa
             .to_owned(),
         root_path: root_path.clone(),
         last_opened_at: timestamp_millis(),
+        view_state: Some(ProjectViewStatePayload {
+            is_expanded: true,
+            collapsed_paths: previous_view_state
+                .map(|state| state.collapsed_paths)
+                .unwrap_or_default(),
+        }),
     };
 
-    let mut store = read_store(app)?;
     store.roots.retain(|item| item.root_path != root_path);
     store.roots.insert(0, project.clone());
     write_store(app, &store)?;
@@ -109,14 +134,31 @@ pub(crate) fn remember(app: &AppHandle, root: &Path) -> Result<ProjectRootPayloa
 }
 
 pub(crate) fn forget(app: &AppHandle, root_path: &str) -> Result<(), String> {
+    let _guard = STORE_LOCK.lock().map_err(error_message)?;
     let mut store = read_store(app)?;
     store.roots.retain(|item| item.root_path != root_path);
     write_store(app, &store)
 }
 
+pub(crate) fn update_view_state(
+    app: &AppHandle,
+    root_path: &str,
+    view_state: ProjectViewStatePayload,
+) -> Result<(), String> {
+    let _guard = STORE_LOCK.lock().map_err(error_message)?;
+    let mut store = read_store(app)?;
+    let project = store
+        .roots
+        .iter_mut()
+        .find(|item| item.root_path == root_path)
+        .ok_or_else(|| "这个根目录尚未加入 mardi".to_string())?;
+    project.view_state = Some(view_state);
+    write_store(app, &store)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ProjectRootPayload;
+    use super::{ProjectRootPayload, ProjectViewStatePayload};
 
     #[test]
     fn project_root_serializes_with_frontend_field_names() {
@@ -124,10 +166,24 @@ mod tests {
             root_path: "/notes".into(),
             name: "notes".into(),
             last_opened_at: 42,
+            view_state: Some(ProjectViewStatePayload {
+                is_expanded: true,
+                collapsed_paths: vec!["/notes/archive".into()],
+            }),
         };
         let json = serde_json::to_value(root).unwrap();
 
         assert_eq!(json["rootPath"], "/notes");
         assert_eq!(json["lastOpenedAt"], 42);
+        assert_eq!(json["viewState"]["isExpanded"], true);
+        assert_eq!(json["viewState"]["collapsedPaths"][0], "/notes/archive");
+    }
+
+    #[test]
+    fn old_project_roots_without_view_state_remain_readable() {
+        let json = r#"{"rootPath":"/notes","name":"notes","lastOpenedAt":42}"#;
+        let root: ProjectRootPayload = serde_json::from_str(json).unwrap();
+        assert_eq!(root.root_path, "/notes");
+        assert_eq!(root.view_state, None);
     }
 }

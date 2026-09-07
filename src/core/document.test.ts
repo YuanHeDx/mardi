@@ -24,6 +24,35 @@ describe("document session", () => {
     expect(isDocumentDirty(saved)).toBe(false);
   });
 
+  it("keeps unsaved content and mode when the file is renamed", () => {
+    const loaded = documentReducer(initialDocumentSession, {
+      type: "loaded",
+      document: {
+        path: "/notes/old.md",
+        name: "old.md",
+        content: "saved",
+      },
+    });
+    const editing = documentReducer(
+      documentReducer(loaded, { type: "contentChanged", content: "draft" }),
+      { type: "modeChanged", mode: "edit" },
+    );
+    const relocated = documentReducer(editing, {
+      type: "relocated",
+      path: "/notes/new.md",
+      name: "new.md",
+    });
+
+    expect(relocated.document).toEqual({
+      path: "/notes/new.md",
+      name: "new.md",
+      content: "draft",
+    });
+    expect(relocated.savedContent).toBe("saved");
+    expect(relocated.mode).toBe("edit");
+    expect(isDocumentDirty(relocated)).toBe(true);
+  });
+
   it("counts lines and mixed-language words", () => {
     expect(getDocumentStats("Hello world\n你好")).toEqual({
       words: 4,

@@ -1,4 +1,5 @@
 mod project_repository;
+mod workspace_files;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Serialize;
@@ -8,7 +9,7 @@ use std::{
 };
 use tauri::Manager;
 
-use project_repository::ProjectRootPayload;
+use project_repository::{ProjectRootPayload, ProjectViewStatePayload};
 
 const MAX_DOCUMENT_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
@@ -243,6 +244,95 @@ fn list_workspace(app: tauri::AppHandle, root_path: String) -> Result<WorkspaceS
     })
 }
 
+fn require_known_root(app: &tauri::AppHandle, root_path: &str) -> Result<PathBuf, String> {
+    let root = PathBuf::from(root_path)
+        .canonicalize()
+        .map_err(error_message)?;
+    if !root.is_dir() {
+        return Err("项目根目录不存在或无法读取".into());
+    }
+    if !project_repository::contains(app, &root)? {
+        return Err("这个根目录尚未加入 mardi".into());
+    }
+    Ok(root)
+}
+
+fn workspace_entry_for_file(path: PathBuf) -> Result<WorkspaceEntry, String> {
+    let kind = file_kind(&path).ok_or_else(|| "该文件类型不受 mardi 支持".to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "文件名不是有效的 UTF-8 文本".to_string())?
+        .to_owned();
+    Ok(WorkspaceEntry {
+        path: path.to_string_lossy().into_owned(),
+        name,
+        kind,
+        children: Vec::new(),
+    })
+}
+
+#[tauri::command]
+fn create_workspace_markdown(
+    app: tauri::AppHandle,
+    root_path: String,
+    parent_path: String,
+    name: String,
+) -> Result<WorkspaceEntry, String> {
+    let root = require_known_root(&app, &root_path)?;
+    workspace_files::create_markdown_file(&root, Path::new(&parent_path), &name)
+        .and_then(workspace_entry_for_file)
+}
+
+#[tauri::command]
+fn rename_workspace_file(
+    app: tauri::AppHandle,
+    root_path: String,
+    path: String,
+    new_stem: String,
+) -> Result<WorkspaceEntry, String> {
+    let root = require_known_root(&app, &root_path)?;
+    workspace_files::rename_file(&root, Path::new(&path), &new_stem)
+        .and_then(workspace_entry_for_file)
+}
+
+#[tauri::command]
+fn trash_workspace_file(
+    app: tauri::AppHandle,
+    root_path: String,
+    path: String,
+) -> Result<(), String> {
+    let root = require_known_root(&app, &root_path)?;
+    workspace_files::move_file_to_trash(&root, Path::new(&path))
+}
+
+#[tauri::command]
+fn update_project_view_state(
+    app: tauri::AppHandle,
+    root_path: String,
+    is_expanded: bool,
+    collapsed_paths: Vec<String>,
+) -> Result<(), String> {
+    let root = require_known_root(&app, &root_path)?;
+    let mut collapsed_paths = collapsed_paths
+        .into_iter()
+        .filter_map(|path| PathBuf::from(path).canonicalize().ok())
+        .filter(|path| path.is_dir() && path != &root && path.starts_with(&root))
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    collapsed_paths.sort();
+    collapsed_paths.dedup();
+
+    project_repository::update_view_state(
+        &app,
+        &root_path,
+        ProjectViewStatePayload {
+            is_expanded,
+            collapsed_paths,
+        },
+    )
+}
+
 fn image_mime_type(path: &Path) -> Option<&'static str> {
     match path
         .extension()
@@ -318,6 +408,10 @@ pub fn run() {
             remember_project_root,
             forget_project_root,
             list_workspace,
+            create_workspace_markdown,
+            rename_workspace_file,
+            trash_workspace_file,
+            update_project_view_state,
             read_local_image
         ])
         .run(tauri::generate_context!())

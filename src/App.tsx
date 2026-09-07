@@ -113,6 +113,61 @@ function App() {
     );
   };
 
+  const handleCreateFile = async (
+    rootPath: string,
+    parentPath: string,
+    name: string,
+  ) => {
+    const entry = await workspaceSession.createFile(rootPath, parentPath, name);
+    if (!entry) return false;
+    await openEntry(entry, rootPath);
+    return true;
+  };
+
+  const handleRenameFile = async (
+    entry: WorkspaceEntry,
+    rootPath: string,
+    newStem: string,
+  ) => {
+    const renamed = await workspaceSession.renameFile(
+      rootPath,
+      entry.path,
+      newStem,
+    );
+    if (!renamed) return false;
+
+    if (activeDocument?.path === entry.path) {
+      documentSession.relocateDocument(renamed.path, renamed.name);
+    }
+    if (activeMedia?.path === entry.path) {
+      setActiveMedia({
+        ...activeMedia,
+        path: renamed.path,
+        name: renamed.name,
+      });
+    }
+    return true;
+  };
+
+  const handleDeleteFile = async (
+    entry: WorkspaceEntry,
+    rootPath: string,
+  ) => {
+    if (!window.confirm(`要将“${entry.name}”移到废纸篓吗？`)) return false;
+
+    const isActiveDocument = activeDocument?.path === entry.path;
+    const isActiveMedia = activeMedia?.path === entry.path;
+    if (isActiveDocument && !documentSession.confirmDiscardChanges()) {
+      return false;
+    }
+
+    const didDelete = await workspaceSession.trashFile(rootPath, entry.path);
+    if (!didDelete) return false;
+    if (isActiveDocument) documentSession.discardDocument();
+    if (isActiveMedia) setActiveMedia(null);
+    return true;
+  };
+
   const dismissError = () => {
     documentSession.dismissError();
     workspaceSession.dismissError();
@@ -134,6 +189,10 @@ function App() {
         {sidebarVisible ? (
           <WorkspaceSidebar
             activePath={activePath}
+            canManageFiles={runsInTauri}
+            onCreateFile={handleCreateFile}
+            onDeleteFile={handleDeleteFile}
+            onExpandPath={workspaceSession.expandPath}
             onOpenFile={() => void handleOpenFile()}
             onOpenFolder={() => void handleOpenFolder()}
             onRemoveRoot={(rootPath) =>
@@ -142,10 +201,12 @@ function App() {
             onRetryRoot={(rootPath) =>
               void workspaceSession.retryRoot(rootPath)
             }
+            onRenameFile={handleRenameFile}
             onSelectEntry={(entry, rootPath) =>
               void openEntry(entry, rootPath)
             }
             onToggleRoot={workspaceSession.toggleRoot}
+            onTogglePath={workspaceSession.togglePath}
             roots={workspaceSession.roots}
           />
         ) : null}

@@ -218,7 +218,7 @@ button {
   white-space: nowrap;
 }
 
-.root-remove {
+.root-action {
   display: grid;
   width: 28px;
   height: 28px;
@@ -233,23 +233,23 @@ button {
   cursor: default;
 }
 
-.root-row:hover .root-remove,
-.root-remove:focus-visible {
+.root-row:hover .root-action,
+.root-action:focus-visible {
   opacity: 1;
 }
 
-.root-remove:hover {
+.root-action:hover {
   background: color-mix(in srgb, var(--text-primary) 8%, transparent);
   color: var(--text-primary);
 }
 
-.root-remove svg {
+.root-action svg {
   width: 13px;
   height: 13px;
 }
 
 .root-main:focus-visible,
-.root-remove:focus-visible,
+.root-action:focus-visible,
 .root-error:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -305,6 +305,57 @@ button.root-message {
   cursor: default;
 }
 
+.tree-row-shell {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  border-radius: 5px;
+}
+
+.tree-row-shell .tree-row {
+  min-width: 0;
+  flex: 1;
+}
+
+.tree-row-actions {
+  display: flex;
+  flex: none;
+  padding-right: 3px;
+  opacity: 0;
+}
+
+.tree-row-shell:hover .tree-row-actions,
+.tree-row-actions:focus-within {
+  opacity: 1;
+}
+
+.tree-row-actions button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+}
+
+.tree-row-actions button:hover {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  color: var(--text-primary);
+}
+
+.tree-row-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tree-row-actions svg {
+  width: 13px;
+  height: 13px;
+}
+
 .tree-row:hover {
   background: var(--sidebar-hover);
   color: var(--text-primary);
@@ -333,6 +384,36 @@ button.root-message {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tree-inline-editor {
+  gap: 4px;
+  padding-right: 9px;
+  color: var(--text-primary);
+}
+
+.tree-inline-editor input {
+  min-width: 0;
+  flex: 1;
+  height: 24px;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: 0;
+  background: var(--document-background);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.tree-inline-editor input:disabled {
+  opacity: 0.65;
+}
+
+.tree-inline-editor .tree-file-extension {
+  flex: none;
+  overflow: visible;
+  color: var(--text-muted);
+  text-overflow: clip;
 }
 
 .sidebar-empty {

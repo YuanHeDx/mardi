@@ -62,6 +62,14 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     return true;
   }, [canDiscardChanges]);
 
+  const discardDocument = useCallback(() => {
+    dispatch({ type: "cleared" });
+  }, []);
+
+  const relocateDocument = useCallback((path: string, name: string) => {
+    dispatch({ type: "relocated", path, name });
+  }, []);
+
   const save = useCallback(async () => {
     if (!session.document || !dirty || !isTauriRuntime()) return;
     dispatch({ type: "saveStarted" });
@@ -115,6 +123,9 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     chooseFile,
     openPath,
     closeDocument,
+    discardDocument,
+    relocateDocument,
+    confirmDiscardChanges: canDiscardChanges,
     save,
     setContent: (content: string) =>
       dispatch({ type: "contentChanged", content }),

@@ -16,6 +16,7 @@ export interface DocumentSession {
 
 export type DocumentAction =
   | { type: "loaded"; document: DocumentSnapshot }
+  | { type: "relocated"; path: string; name: string }
   | { type: "cleared" }
   | { type: "contentChanged"; content: string }
   | { type: "modeChanged"; mode: DocumentMode }
@@ -43,6 +44,17 @@ export function documentReducer(
         savedContent: action.document.content,
         mode: "preview",
         isSaving: false,
+        error: null,
+      };
+    case "relocated":
+      if (!state.document) return state;
+      return {
+        ...state,
+        document: {
+          ...state.document,
+          path: action.path,
+          name: action.name,
+        },
         error: null,
       };
     case "cleared":

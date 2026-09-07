@@ -18,6 +18,12 @@ export interface ProjectRoot {
   rootPath: string;
   name: string;
   lastOpenedAt: number;
+  viewState?: ProjectViewState | null;
+}
+
+export interface ProjectViewState {
+  isExpanded: boolean;
+  collapsedPaths: string[];
 }
 
 export interface RootWorkspace {
@@ -27,6 +33,7 @@ export interface RootWorkspace {
   isLoading: boolean;
   isTruncated: boolean;
   error: string | null;
+  collapsedPaths: string[];
 }
 
 export type MediaKind = "image" | "video";
@@ -63,6 +70,38 @@ export function fileKindFromPath(
 
 export function fileNameFromPath(path: string): string {
   return path.split(/[\\/]/).pop() || path;
+}
+
+export function fileNameParts(name: string): { stem: string; extension: string } {
+  const extensionIndex = name.lastIndexOf(".");
+  if (extensionIndex <= 0) return { stem: name, extension: "" };
+  return {
+    stem: name.slice(0, extensionIndex),
+    extension: name.slice(extensionIndex),
+  };
+}
+
+export function viewStateForProject(
+  project: ProjectRoot,
+  expandByDefault = false,
+): ProjectViewState {
+  return (
+    project.viewState ?? {
+      isExpanded: expandByDefault,
+      collapsedPaths: [],
+    }
+  );
+}
+
+export function setDirectoryExpanded(
+  collapsedPaths: string[],
+  path: string,
+  isExpanded: boolean,
+): string[] {
+  const next = new Set(collapsedPaths);
+  if (isExpanded) next.delete(path);
+  else next.add(path);
+  return [...next];
 }
 
 export function flattenMarkdownFiles(
