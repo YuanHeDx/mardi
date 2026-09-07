@@ -219,7 +219,7 @@ button {
 }
 
 .root-action {
-  display: grid;
+  display: none;
   width: 28px;
   height: 28px;
   flex: none;
@@ -229,13 +229,13 @@ button {
   border-radius: 4px;
   background: transparent;
   color: var(--text-faint);
-  opacity: 0;
   cursor: default;
 }
 
 .root-row:hover .root-action,
-.root-action:focus-visible {
-  opacity: 1;
+.root-row:has(.root-main:focus-visible) .root-action,
+.root-row:has(.root-action:focus-visible) .root-action {
+  display: grid;
 }
 
 .root-action:hover {
@@ -306,6 +306,7 @@ button.root-message {
 }
 
 .tree-row-shell {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -318,15 +319,21 @@ button.root-message {
 }
 
 .tree-row-actions {
-  display: flex;
+  position: absolute;
+  right: 3px;
+  display: none;
+  align-items: center;
   flex: none;
+  padding-left: 4px;
   padding-right: 3px;
-  opacity: 0;
+  border-radius: 4px;
+  background: var(--sidebar-hover);
 }
 
 .tree-row-shell:hover .tree-row-actions,
-.tree-row-actions:focus-within {
-  opacity: 1;
+.tree-row-shell:has(.tree-row:focus-visible) .tree-row-actions,
+.tree-row-shell:has(.tree-row-actions button:focus-visible) .tree-row-actions {
+  display: flex;
 }
 
 .tree-row-actions button {
@@ -356,7 +363,9 @@ button.root-message {
   height: 13px;
 }
 
-.tree-row:hover {
+.tree-row:hover,
+.tree-row-shell:hover > .tree-row,
+.tree-row-shell:has(.tree-row:focus-visible) > .tree-row {
   background: var(--sidebar-hover);
   color: var(--text-primary);
 }
