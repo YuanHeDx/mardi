@@ -5,12 +5,21 @@ import type {
   WorkspaceSnapshot,
 } from "../workspace";
 
+export interface WorkspaceFilesChanged {
+  paths: string[];
+  kind: "content" | "structure";
+}
+
 export interface WorkspaceGateway {
   chooseWorkspaceFolder(): Promise<string | null>;
   listProjectRoots(): Promise<ProjectRoot[]>;
   rememberProjectRoot(rootPath: string): Promise<ProjectRoot>;
   forgetProjectRoot(rootPath: string): Promise<void>;
   listWorkspace(rootPath: string): Promise<WorkspaceSnapshot>;
+  watchRoots(rootPaths: string[]): Promise<void>;
+  listenToChanges(
+    listener: (change: WorkspaceFilesChanged) => void,
+  ): Promise<() => void>;
   createMarkdown(
     rootPath: string,
     parentPath: string,

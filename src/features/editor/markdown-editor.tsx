@@ -7,7 +7,7 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import { searchKeymap } from "@codemirror/search";
-import { EditorState } from "@codemirror/state";
+import { EditorState, Transaction } from "@codemirror/state";
 import {
   drawSelection,
   dropCursor,
@@ -125,6 +125,7 @@ export function MarkdownEditor({
     if (!view || view.state.doc.toString() === value) return;
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: value },
+      annotations: Transaction.addToHistory.of(false),
     });
   }, [value]);
 

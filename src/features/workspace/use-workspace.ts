@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { WorkspaceFilesChanged } from "../../core/ports/workspace-gateway";
 import type {
   ProjectRoot,
   ProjectViewState,
@@ -50,7 +51,16 @@ function loadedRoot(
 export function useWorkspace(initialRoots: RootWorkspace[] = []) {
   const [roots, setRoots] = useState<RootWorkspace[]>(initialRoots);
   const [error, setError] = useState<string | null>(null);
+  const [latestChange, setLatestChange] = useState<
+    (WorkspaceFilesChanged & { sequence: number }) | null
+  >(null);
   const persistenceQueues = useRef(new Map<string, Promise<void>>());
+  const rootsRef = useRef(roots);
+  const refreshTimers = useRef(new Map<string, number>());
+
+  useEffect(() => {
+    rootsRef.current = roots;
+  }, [roots]);
 
   const persistViewState = useCallback(
     (rootPath: string, viewState: ProjectViewState) => {
@@ -116,6 +126,34 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
     }
   }, []);
 
+  const refreshRoot = useCallback(async (rootPath: string) => {
+    try {
+      const snapshot = await workspaceGateway.listWorkspace(rootPath);
+      setRoots((current) =>
+        current.map((workspace) =>
+          workspace.root.rootPath === rootPath
+            ? {
+                ...workspace,
+                entries: snapshot.entries,
+                isLoading: false,
+                isTruncated: snapshot.isTruncated,
+                error: null,
+              }
+            : workspace,
+        ),
+      );
+    } catch (caughtError) {
+      const message = messageFromError(caughtError);
+      setRoots((current) =>
+        current.map((workspace) =>
+          workspace.root.rootPath === rootPath
+            ? { ...workspace, error: message }
+            : workspace,
+        ),
+      );
+    }
+  }, []);
+
   useEffect(() => {
     if (initialRoots.length > 0) return;
     let cancelled = false;
@@ -150,6 +188,65 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
       cancelled = true;
     };
   }, [initialRoots.length, loadRoot, persistViewState]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const rootPaths = roots.map((workspace) => workspace.root.rootPath);
+    void workspaceGateway
+      .watchRoots(rootPaths)
+      .catch((caughtError) => setError(messageFromError(caughtError)));
+  }, [roots.map((workspace) => workspace.root.rootPath).join("\u0000")]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let stopped = false;
+    let unlisten: (() => void) | undefined;
+
+    void workspaceGateway
+      .listenToChanges((change) => {
+        setLatestChange((current) => ({
+          ...change,
+          sequence: (current?.sequence ?? 0) + 1,
+        }));
+        if (change.kind !== "structure") return;
+
+        for (const workspace of rootsRef.current) {
+          const rootPath = workspace.root.rootPath;
+          const affectsRoot = change.paths.some(
+            (path) =>
+              isPathWithinRoot(path, rootPath) ||
+              isPathWithinRoot(rootPath, path),
+          );
+          if (!affectsRoot || (!workspace.isExpanded && !workspace.entries)) {
+            continue;
+          }
+
+          const previous = refreshTimers.current.get(rootPath);
+          if (previous) window.clearTimeout(previous);
+          const timeout = window.setTimeout(() => {
+            refreshTimers.current.delete(rootPath);
+            void refreshRoot(rootPath);
+          }, 100);
+          refreshTimers.current.set(rootPath, timeout);
+        }
+      })
+      .then((stopListening) => {
+        if (stopped) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch((caughtError) => {
+        if (!stopped) setError(messageFromError(caughtError));
+      });
+
+    return () => {
+      stopped = true;
+      unlisten?.();
+      for (const timeout of refreshTimers.current.values()) {
+        window.clearTimeout(timeout);
+      }
+      refreshTimers.current.clear();
+    };
+  }, [refreshRoot]);
 
   const openWorkspace = useCallback(async () => {
     try {
@@ -337,6 +434,7 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
   return {
     roots,
     error,
+    latestChange,
     openWorkspace,
     toggleRoot,
     togglePath,

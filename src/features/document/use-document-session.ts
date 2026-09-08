@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+} from "react";
 import {
   documentReducer,
   initialDocumentSession,
@@ -20,10 +26,13 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
   );
   const dirty = isDocumentDirty(session);
   const dirtyRef = useRef(dirty);
+  const sessionRef = useRef(session);
+  const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     dirtyRef.current = dirty;
-  }, [dirty]);
+    sessionRef.current = session;
+  }, [dirty, session]);
 
   const canDiscardChanges = useCallback(() => {
     return (
@@ -32,9 +41,54 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     );
   }, []);
 
+  const save = useCallback((): Promise<boolean> => {
+    if (!isTauriRuntime()) return Promise.resolve(true);
+
+    const queuedSave = saveQueueRef.current
+      .catch(() => false)
+      .then(async () => {
+        while (true) {
+          const current = sessionRef.current;
+          if (
+            !current.document ||
+            current.document.content === current.savedContent
+          ) {
+            return true;
+          }
+
+          const { path, content } = current.document;
+          const saving = documentReducer(current, { type: "saveStarted" });
+          sessionRef.current = saving;
+          dispatch({ type: "saveStarted" });
+          try {
+            await documentGateway.writeDocument(path, content);
+            const latest = sessionRef.current;
+            const completed = documentReducer(latest, {
+              type: "saveCompleted",
+              content,
+            });
+            sessionRef.current = completed;
+            dirtyRef.current = isDocumentDirty(completed);
+            dispatch({ type: "saveCompleted", content });
+          } catch (error) {
+            const failed = documentReducer(sessionRef.current, {
+              type: "failed",
+              message: messageFromError(error),
+            });
+            sessionRef.current = failed;
+            dirtyRef.current = isDocumentDirty(failed);
+            dispatch({ type: "failed", message: failed.error ?? "保存失败" });
+            return false;
+          }
+        }
+      });
+    saveQueueRef.current = queuedSave;
+    return queuedSave;
+  }, []);
+
   const openPath = useCallback(
     async (path: string) => {
-      if (!canDiscardChanges()) return false;
+      if (!(await save())) return false;
       try {
         const document = await documentGateway.readDocument(path);
         dispatch({ type: "loaded", document });
@@ -44,7 +98,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         return false;
       }
     },
-    [canDiscardChanges],
+    [save],
   );
 
   const chooseFile = useCallback(async () => {
@@ -56,11 +110,11 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     }
   }, []);
 
-  const closeDocument = useCallback(() => {
-    if (!canDiscardChanges()) return false;
+  const closeDocument = useCallback(async () => {
+    if (!(await save())) return false;
     dispatch({ type: "cleared" });
     return true;
-  }, [canDiscardChanges]);
+  }, [save]);
 
   const discardDocument = useCallback(() => {
     dispatch({ type: "cleared" });
@@ -70,19 +124,54 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     dispatch({ type: "relocated", path, name });
   }, []);
 
-  const save = useCallback(async () => {
-    if (!session.document || !dirty || !isTauriRuntime()) return;
-    dispatch({ type: "saveStarted" });
+  const refreshFromDisk = useCallback(async (path: string) => {
+    const current = sessionRef.current;
+    if (
+      !current.document ||
+      current.document.path !== path ||
+      dirtyRef.current ||
+      current.isSaving
+    ) {
+      return false;
+    }
+
     try {
-      await documentGateway.writeDocument(
-        session.document.path,
-        session.document.content,
-      );
-      dispatch({ type: "saveCompleted" });
+      const document = await documentGateway.readDocument(path);
+      const latest = sessionRef.current;
+      if (
+        !latest.document ||
+        latest.document.path !== path ||
+        dirtyRef.current ||
+        latest.isSaving
+      ) {
+        return false;
+      }
+      if (latest.document.content !== document.content) {
+        dispatch({ type: "refreshed", document });
+      }
+      return true;
     } catch (error) {
       dispatch({ type: "failed", message: messageFromError(error) });
+      return false;
     }
-  }, [dirty, session.document]);
+  }, []);
+
+  const setContent = useCallback((content: string) => {
+    const current = sessionRef.current;
+    if (!current.document) return;
+    sessionRef.current = {
+      ...current,
+      document: { ...current.document, content },
+    };
+    dirtyRef.current = content !== current.savedContent;
+    dispatch({ type: "contentChanged", content });
+  }, []);
+
+  useEffect(() => {
+    if (!dirty || !session.document || !isTauriRuntime()) return;
+    const timeout = window.setTimeout(() => void save(), 400);
+    return () => window.clearTimeout(timeout);
+  }, [dirty, save, session.document]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -99,23 +188,22 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     if (!isTauriRuntime()) return;
     let unlisten: (() => void) | undefined;
 
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
-      getCurrentWindow()
-        .onCloseRequested((event) => {
-          if (
-            dirtyRef.current &&
-            !window.confirm("当前修改尚未保存。确定关闭 mardi 吗？")
-          ) {
+    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      const currentWindow = getCurrentWindow();
+      return currentWindow
+        .onCloseRequested(async (event) => {
+          if (dirtyRef.current) {
             event.preventDefault();
+            if (await save()) await currentWindow.destroy();
           }
         })
         .then((stopListening) => {
           unlisten = stopListening;
-        }),
-    );
+        });
+    });
 
     return () => unlisten?.();
-  }, []);
+  }, [save]);
 
   return {
     session,
@@ -125,10 +213,10 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     closeDocument,
     discardDocument,
     relocateDocument,
+    refreshFromDisk,
     confirmDiscardChanges: canDiscardChanges,
     save,
-    setContent: (content: string) =>
-      dispatch({ type: "contentChanged", content }),
+    setContent,
     setMode: (mode: "preview" | "edit") =>
       dispatch({ type: "modeChanged", mode }),
     dismissError: () => dispatch({ type: "dismissedError" }),

@@ -20,8 +20,50 @@ describe("document session", () => {
     });
     expect(isDocumentDirty(edited)).toBe(true);
 
-    const saved = documentReducer(edited, { type: "saveCompleted" });
+    const saved = documentReducer(edited, {
+      type: "saveCompleted",
+      content: "Hello mardi",
+    });
     expect(isDocumentDirty(saved)).toBe(false);
+  });
+
+  it("only marks the exact written snapshot as saved", () => {
+    const loaded = documentReducer(initialDocumentSession, {
+      type: "loaded",
+      document: { path: "/notes/a.md", name: "a.md", content: "saved" },
+    });
+    const saving = documentReducer(loaded, {
+      type: "contentChanged",
+      content: "first edit",
+    });
+    const editedAgain = documentReducer(saving, {
+      type: "contentChanged",
+      content: "newer edit",
+    });
+    const completed = documentReducer(editedAgain, {
+      type: "saveCompleted",
+      content: "first edit",
+    });
+
+    expect(completed.savedContent).toBe("first edit");
+    expect(completed.document?.content).toBe("newer edit");
+    expect(isDocumentDirty(completed)).toBe(true);
+  });
+
+  it("refreshes a clean document from disk without leaving preview mode", () => {
+    const loaded = documentReducer(initialDocumentSession, {
+      type: "loaded",
+      document: { path: "/notes/a.md", name: "a.md", content: "old" },
+    });
+    const refreshed = documentReducer(loaded, {
+      type: "refreshed",
+      document: { path: "/notes/a.md", name: "a.md", content: "new" },
+    });
+
+    expect(refreshed.document?.content).toBe("new");
+    expect(refreshed.savedContent).toBe("new");
+    expect(refreshed.mode).toBe("preview");
+    expect(isDocumentDirty(refreshed)).toBe(false);
   });
 
   it("keeps unsaved content and mode when the file is renamed", () => {

@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { WorkspaceGateway } from "../../core/ports/workspace-gateway";
+import type {
+  WorkspaceFilesChanged,
+  WorkspaceGateway,
+} from "../../core/ports/workspace-gateway";
 import type {
   ProjectRoot,
   ProjectViewState,
@@ -35,6 +39,20 @@ export class TauriWorkspaceGateway implements WorkspaceGateway {
 
   listWorkspace(rootPath: string): Promise<WorkspaceSnapshot> {
     return invoke<WorkspaceSnapshot>("list_workspace", { rootPath });
+  }
+
+  watchRoots(rootPaths: string[]): Promise<void> {
+    if (!isTauriRuntime()) return Promise.resolve();
+    return invoke("watch_workspace_roots", { rootPaths });
+  }
+
+  async listenToChanges(
+    listener: (change: WorkspaceFilesChanged) => void,
+  ): Promise<() => void> {
+    if (!isTauriRuntime()) return () => undefined;
+    return listen<WorkspaceFilesChanged>("workspace-files-changed", (event) =>
+      listener(event.payload),
+    );
   }
 
   createMarkdown(

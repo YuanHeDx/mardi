@@ -2,12 +2,14 @@ mod project_repository;
 mod workspace_files;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use notify::{EventKind, RecursiveMode, Watcher, event::ModifyKind};
 use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use project_repository::{ProjectRootPayload, ProjectViewStatePayload};
 
@@ -49,6 +51,25 @@ struct WorkspaceSnapshot {
     root_name: String,
     entries: Vec<WorkspaceEntry>,
     is_truncated: bool,
+}
+
+#[derive(Default)]
+struct WorkspaceWatcherState {
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum WorkspaceChangeKind {
+    Content,
+    Structure,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceFilesChangedPayload {
+    paths: Vec<String>,
+    kind: WorkspaceChangeKind,
 }
 
 fn error_message(error: impl std::fmt::Display) -> String {
@@ -279,6 +300,65 @@ fn require_known_root(app: &tauri::AppHandle, root_path: &str) -> Result<PathBuf
     Ok(root)
 }
 
+fn workspace_change_kind(kind: &EventKind) -> Option<WorkspaceChangeKind> {
+    match kind {
+        EventKind::Access(_) => None,
+        EventKind::Modify(ModifyKind::Data(_) | ModifyKind::Metadata(_)) => {
+            Some(WorkspaceChangeKind::Content)
+        }
+        _ => Some(WorkspaceChangeKind::Structure),
+    }
+}
+
+#[tauri::command]
+fn watch_workspace_roots(
+    app: tauri::AppHandle,
+    state: tauri::State<WorkspaceWatcherState>,
+    root_paths: Vec<String>,
+) -> Result<(), String> {
+    let roots = root_paths
+        .iter()
+        .map(|root_path| require_known_root(&app, root_path))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let event_app = app.clone();
+    let mut watcher =
+        notify::recommended_watcher(move |result: Result<notify::Event, notify::Error>| {
+            let Ok(event) = result else {
+                return;
+            };
+            let Some(kind) = workspace_change_kind(&event.kind) else {
+                return;
+            };
+            let paths = event
+                .paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            if paths.is_empty() {
+                return;
+            }
+            let _ = event_app.emit(
+                "workspace-files-changed",
+                WorkspaceFilesChangedPayload { paths, kind },
+            );
+        })
+        .map_err(error_message)?;
+
+    for root in roots {
+        watcher
+            .watch(&root, RecursiveMode::Recursive)
+            .map_err(error_message)?;
+    }
+
+    let mut current = state
+        .watcher
+        .lock()
+        .map_err(|_| "文件监听状态不可用".to_string())?;
+    *current = Some(watcher);
+    Ok(())
+}
+
 fn workspace_entry_for_path(path: PathBuf) -> Result<WorkspaceEntry, String> {
     let kind = if path.is_dir() {
         FileKind::Directory
@@ -425,6 +505,7 @@ fn read_local_image(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(WorkspaceWatcherState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -432,6 +513,7 @@ pub fn run() {
             write_document,
             copy_text_to_clipboard,
             list_project_roots,
+            watch_workspace_roots,
             remember_project_root,
             forget_project_root,
             list_workspace,
@@ -447,7 +529,13 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileKind, file_kind, is_markdown_file};
+    use super::{
+        FileKind, WorkspaceChangeKind, file_kind, is_markdown_file, workspace_change_kind,
+    };
+    use notify::{
+        EventKind,
+        event::{AccessKind, CreateKind, DataChange, ModifyKind},
+    };
     use std::path::Path;
 
     #[test]
@@ -468,5 +556,21 @@ mod tests {
             Some(FileKind::Video)
         ));
         assert!(file_kind(Path::new("vector.svg")).is_none());
+    }
+
+    #[test]
+    fn classifies_file_watcher_events_without_reacting_to_reads() {
+        assert_eq!(
+            workspace_change_kind(&EventKind::Access(AccessKind::Any)),
+            None
+        );
+        assert_eq!(
+            workspace_change_kind(&EventKind::Modify(ModifyKind::Data(DataChange::Any))),
+            Some(WorkspaceChangeKind::Content)
+        );
+        assert_eq!(
+            workspace_change_kind(&EventKind::Create(CreateKind::File)),
+            Some(WorkspaceChangeKind::Structure)
+        );
     }
 }

@@ -4,6 +4,12 @@ import type { DocumentSnapshot } from "../core/document";
 import { documentGateway } from "../infrastructure/tauri/document-gateway";
 import { isTauriRuntime } from "../infrastructure/tauri/runtime";
 import { markdownRenderer } from "../services/markdown-renderer";
+import {
+  caretBoundaryFromPoint,
+  rangeBetweenBoundaries,
+  trimRangeWhitespace,
+  type SelectionBoundary,
+} from "./preview-selection";
 import type { TextSelection } from "./selection-toolbar";
 
 interface MarkdownPreviewProps {
@@ -20,6 +26,11 @@ export function MarkdownPreview({
   onTextSelection,
 }: MarkdownPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const selectionGestureRef = useRef<{
+    boundary: SelectionBoundary;
+    x: number;
+    y: number;
+  } | null>(null);
   const rendered = useMemo(() => markdownRenderer.render(content), [content]);
 
   useEffect(() => {
@@ -81,8 +92,16 @@ export function MarkdownPreview({
         return;
       }
 
-      const text = selection.toString().trim();
-      const rect = selection.getRangeAt(0).getClientRects()[0];
+      const originalRange = selection.getRangeAt(0);
+      const range = trimRangeWhitespace(originalRange, containerRef.current);
+      const text = range.toString();
+      if (text !== originalRange.toString()) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      const rect = Array.from(range.getClientRects()).find(
+        (item) => item.width > 0 && item.height > 0,
+      );
       if (!text || !rect) {
         onTextSelection?.(null);
         return;
@@ -98,6 +117,56 @@ export function MarkdownPreview({
     });
   }, [onTextSelection]);
 
+  const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || event.detail !== 1) {
+      selectionGestureRef.current = null;
+      return;
+    }
+    const boundary = caretBoundaryFromPoint(
+      window.document,
+      event.clientX,
+      event.clientY,
+    );
+    if (!boundary || !containerRef.current?.contains(boundary.node)) {
+      selectionGestureRef.current = null;
+      return;
+    }
+    selectionGestureRef.current = {
+      boundary,
+      x: event.clientX,
+      y: event.clientY,
+    };
+  };
+
+  const handleMouseUp = (event: MouseEvent<HTMLDivElement>) => {
+    const gesture = selectionGestureRef.current;
+    selectionGestureRef.current = null;
+    if (
+      gesture &&
+      Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 3
+    ) {
+      const boundary = caretBoundaryFromPoint(
+        window.document,
+        event.clientX,
+        event.clientY,
+      );
+      if (boundary && containerRef.current?.contains(boundary.node)) {
+        const range = rangeBetweenBoundaries(
+          window.document,
+          gesture.boundary,
+          boundary,
+        );
+        const selection = window.getSelection();
+        if (range && selection && !range.collapsed) {
+          const trimmed = trimRangeWhitespace(range, containerRef.current);
+          selection.removeAllRanges();
+          selection.addRange(trimmed);
+        }
+      }
+    }
+    reportSelection();
+  };
+
   useEffect(() => {
     window.document.addEventListener("selectionchange", reportSelection);
     return () =>
@@ -109,7 +178,8 @@ export function MarkdownPreview({
       className="preview-scroll"
       onClick={handleClick}
       onKeyUp={reportSelection}
-      onMouseUp={reportSelection}
+      onMouseDown={handleMouseDown}
+      onMouseUp={handleMouseUp}
       onScroll={() => onTextSelection?.(null)}
     >
       <article

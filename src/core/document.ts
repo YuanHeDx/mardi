@@ -16,12 +16,13 @@ export interface DocumentSession {
 
 export type DocumentAction =
   | { type: "loaded"; document: DocumentSnapshot }
+  | { type: "refreshed"; document: DocumentSnapshot }
   | { type: "relocated"; path: string; name: string }
   | { type: "cleared" }
   | { type: "contentChanged"; content: string }
   | { type: "modeChanged"; mode: DocumentMode }
   | { type: "saveStarted" }
-  | { type: "saveCompleted" }
+  | { type: "saveCompleted"; content: string }
   | { type: "failed"; message: string }
   | { type: "dismissedError" };
 
@@ -44,6 +45,16 @@ export function documentReducer(
         savedContent: action.document.content,
         mode: "preview",
         isSaving: false,
+        error: null,
+      };
+    case "refreshed":
+      if (!state.document || state.document.path !== action.document.path) {
+        return state;
+      }
+      return {
+        ...state,
+        document: action.document,
+        savedContent: action.document.content,
         error: null,
       };
     case "relocated":
@@ -73,7 +84,7 @@ export function documentReducer(
     case "saveCompleted":
       return {
         ...state,
-        savedContent: state.document?.content ?? state.savedContent,
+        savedContent: action.content,
         isSaving: false,
         error: null,
       };

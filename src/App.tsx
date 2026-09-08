@@ -68,6 +68,24 @@ function App() {
   }, [activeDocument?.path, session.mode]);
 
   useEffect(() => {
+    const change = workspaceSession.latestChange;
+    if (!activeDocument || !change) return;
+    const affectsDocument = change.paths.some(
+      (path) =>
+        isPathWithinRoot(path, activeDocument.path) ||
+        isPathWithinRoot(activeDocument.path, path),
+    );
+    if (affectsDocument) {
+      void documentSession.refreshFromDisk(activeDocument.path);
+    }
+  }, [
+    activeDocument?.path,
+    documentSession.dirty,
+    session.isSaving,
+    workspaceSession.latestChange?.sequence,
+  ]);
+
+  useEffect(() => {
     if (!runsInTauri) return;
     const title = activePath
       ? `${documentSession.dirty ? "• " : ""}${activeTitle} — mardi`
@@ -90,7 +108,7 @@ function App() {
     }
 
     if (entry.kind === "image" || entry.kind === "video") {
-      if (!documentSession.closeDocument()) return;
+      if (!(await documentSession.closeDocument())) return;
       setActiveMedia({
         kind: entry.kind,
         path: entry.path,
