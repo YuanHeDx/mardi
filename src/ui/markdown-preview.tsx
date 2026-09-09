@@ -1,12 +1,19 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useCallback, useEffect, useMemo, useRef, type MouseEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type MouseEvent,
+} from "react";
 import type { DocumentSnapshot } from "../core/document";
 import { documentGateway } from "../infrastructure/tauri/document-gateway";
 import { isTauriRuntime } from "../infrastructure/tauri/runtime";
 import { markdownRenderer } from "../services/markdown-renderer";
 import {
-  caretBoundaryFromPoint,
   rangeBetweenBoundaries,
+  selectionBoundaryFromPoint,
   trimRangeWhitespace,
   type SelectionBoundary,
 } from "./preview-selection";
@@ -19,7 +26,7 @@ interface MarkdownPreviewProps {
   onTextSelection?: (selection: TextSelection | null) => void;
 }
 
-export function MarkdownPreview({
+export const MarkdownPreview = memo(function MarkdownPreview({
   content,
   document,
   workspaceRoot,
@@ -27,10 +34,14 @@ export function MarkdownPreview({
 }: MarkdownPreviewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const selectionGestureRef = useRef<{
-    boundary: SelectionBoundary;
-    x: number;
-    y: number;
+    start: SelectionBoundary;
+    startX: number;
+    startY: number;
+    lastX: number;
+    lastY: number;
   } | null>(null);
+  const selectionUpdateFrameRef = useRef<number | null>(null);
+  const selectionReportFrameRef = useRef<number | null>(null);
   const rendered = useMemo(() => markdownRenderer.render(content), [content]);
 
   useEffect(() => {
@@ -75,7 +86,13 @@ export function MarkdownPreview({
   };
 
   const reportSelection = useCallback(() => {
-    window.requestAnimationFrame(() => {
+    if (selectionGestureRef.current) return;
+    if (selectionReportFrameRef.current !== null) {
+      window.cancelAnimationFrame(selectionReportFrameRef.current);
+    }
+    selectionReportFrameRef.current = window.requestAnimationFrame(() => {
+      selectionReportFrameRef.current = null;
+      if (selectionGestureRef.current) return;
       if (window.document.activeElement?.closest(".selection-toolbar")) return;
       const selection = window.getSelection();
       const anchorNode = selection?.anchorNode;
@@ -95,10 +112,6 @@ export function MarkdownPreview({
       const originalRange = selection.getRangeAt(0);
       const range = trimRangeWhitespace(originalRange, containerRef.current);
       const text = range.toString();
-      if (text !== originalRange.toString()) {
-        selection.removeAllRanges();
-        selection.addRange(range);
-      }
       const rect = Array.from(range.getClientRects()).find(
         (item) => item.width > 0 && item.height > 0,
       );
@@ -118,60 +131,122 @@ export function MarkdownPreview({
   }, [onTextSelection]);
 
   const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || event.detail !== 1) {
-      selectionGestureRef.current = null;
+    if (
+      event.button !== 0 ||
+      event.detail !== 1 ||
+      (event.target as Element).closest("a[href]")
+    ) {
       return;
     }
-    const boundary = caretBoundaryFromPoint(
+    const root = containerRef.current;
+    if (!root) return;
+    const start = selectionBoundaryFromPoint(
       window.document,
+      root,
+      window.document.elementFromPoint(event.clientX, event.clientY) ??
+        event.target,
       event.clientX,
       event.clientY,
     );
-    if (!boundary || !containerRef.current?.contains(boundary.node)) {
-      selectionGestureRef.current = null;
-      return;
+    if (!start) return;
+
+    event.preventDefault();
+    if (selectionReportFrameRef.current !== null) {
+      window.cancelAnimationFrame(selectionReportFrameRef.current);
+      selectionReportFrameRef.current = null;
     }
+    window.getSelection()?.removeAllRanges();
     selectionGestureRef.current = {
-      boundary,
-      x: event.clientX,
-      y: event.clientY,
+      start,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
     };
+    onTextSelection?.(null);
   };
 
-  const handleMouseUp = (event: MouseEvent<HTMLDivElement>) => {
+  const updateMouseSelection = useCallback((x: number, y: number) => {
     const gesture = selectionGestureRef.current;
-    selectionGestureRef.current = null;
-    if (
-      gesture &&
-      Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 3
-    ) {
-      const boundary = caretBoundaryFromPoint(
-        window.document,
-        event.clientX,
-        event.clientY,
-      );
-      if (boundary && containerRef.current?.contains(boundary.node)) {
-        const range = rangeBetweenBoundaries(
-          window.document,
-          gesture.boundary,
-          boundary,
-        );
-        const selection = window.getSelection();
-        if (range && selection && !range.collapsed) {
-          const trimmed = trimRangeWhitespace(range, containerRef.current);
-          selection.removeAllRanges();
-          selection.addRange(trimmed);
-        }
-      }
-    }
-    reportSelection();
-  };
+    const root = containerRef.current;
+    if (!gesture || !root) return;
+    const target = window.document.elementFromPoint(x, y);
+    const end = selectionBoundaryFromPoint(
+      window.document,
+      root,
+      target,
+      x,
+      y,
+    );
+    if (!end) return;
+    const range = rangeBetweenBoundaries(window.document, gesture.start, end);
+    const selection = window.getSelection();
+    if (!range || !selection || range.collapsed) return;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, []);
 
   useEffect(() => {
+    const handleMouseMove = (event: globalThis.MouseEvent) => {
+      const gesture = selectionGestureRef.current;
+      if (!gesture) return;
+      event.preventDefault();
+      gesture.lastX = event.clientX;
+      gesture.lastY = event.clientY;
+      if (
+        Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY) <=
+        3
+      ) {
+        return;
+      }
+      if (selectionUpdateFrameRef.current !== null) return;
+      selectionUpdateFrameRef.current = window.requestAnimationFrame(() => {
+        selectionUpdateFrameRef.current = null;
+        const current = selectionGestureRef.current;
+        if (current) updateMouseSelection(current.lastX, current.lastY);
+      });
+    };
+
+    const finishMouseSelection = (event?: globalThis.MouseEvent) => {
+      const gesture = selectionGestureRef.current;
+      if (!gesture) return;
+      if (event) {
+        event.preventDefault();
+        gesture.lastX = event.clientX;
+        gesture.lastY = event.clientY;
+      }
+      if (selectionUpdateFrameRef.current !== null) {
+        window.cancelAnimationFrame(selectionUpdateFrameRef.current);
+        selectionUpdateFrameRef.current = null;
+      }
+      if (
+        Math.hypot(gesture.lastX - gesture.startX, gesture.lastY - gesture.startY) >
+        3
+      ) {
+        updateMouseSelection(gesture.lastX, gesture.lastY);
+      }
+      selectionGestureRef.current = null;
+      reportSelection();
+    };
+    const handleBlur = () => finishMouseSelection();
+
     window.document.addEventListener("selectionchange", reportSelection);
-    return () =>
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", finishMouseSelection);
+    window.addEventListener("blur", handleBlur);
+    return () => {
       window.document.removeEventListener("selectionchange", reportSelection);
-  }, [reportSelection]);
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", finishMouseSelection);
+      window.removeEventListener("blur", handleBlur);
+      if (selectionUpdateFrameRef.current !== null) {
+        window.cancelAnimationFrame(selectionUpdateFrameRef.current);
+      }
+      if (selectionReportFrameRef.current !== null) {
+        window.cancelAnimationFrame(selectionReportFrameRef.current);
+      }
+    };
+  }, [reportSelection, updateMouseSelection]);
 
   return (
     <div
@@ -179,7 +254,6 @@ export function MarkdownPreview({
       onClick={handleClick}
       onKeyUp={reportSelection}
       onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
       onScroll={() => onTextSelection?.(null)}
     >
       <article
@@ -189,4 +263,4 @@ export function MarkdownPreview({
       />
     </div>
   );
-}
+});
