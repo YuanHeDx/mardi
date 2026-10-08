@@ -67,6 +67,18 @@ export class TauriWorkspaceGateway implements WorkspaceGateway {
     });
   }
 
+  createDirectory(
+    rootPath: string,
+    parentPath: string,
+    name: string,
+  ): Promise<WorkspaceEntry> {
+    return invoke<WorkspaceEntry>("create_workspace_directory", {
+      rootPath,
+      parentPath,
+      name,
+    });
+  }
+
   renameEntry(
     rootPath: string,
     path: string,

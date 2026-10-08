@@ -1,7 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { DocumentSnapshot } from "../../core/document";
-import type { DocumentGateway } from "../../core/ports/document-gateway";
+import type {
+  DocumentGateway,
+  DocumentLocation,
+} from "../../core/ports/document-gateway";
 import { isTauriRuntime } from "./runtime";
 
 export class TauriDocumentGateway implements DocumentGateway {
@@ -38,6 +41,20 @@ export class TauriDocumentGateway implements DocumentGateway {
 
   readDocument(path: string): Promise<DocumentSnapshot> {
     return invoke<DocumentSnapshot>("read_document", { path });
+  }
+
+  locateDocument(
+    currentPath: string,
+    fileId: string,
+    rootPaths: string[],
+    candidatePaths: string[],
+  ): Promise<DocumentLocation | null> {
+    return invoke<DocumentLocation | null>("locate_document", {
+      currentPath,
+      fileId,
+      rootPaths,
+      candidatePaths,
+    });
   }
 
   writeDocument(path: string, content: string): Promise<void> {

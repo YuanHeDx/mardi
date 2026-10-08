@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fileKindFromPath,
+  filterWorkspaceEntries,
   fileNameParts,
   findRootPathForFile,
   flattenMarkdownFiles,
@@ -47,6 +48,44 @@ describe("workspace models", () => {
     expect(flattenMarkdownFiles(entries).map((entry) => entry.path)).toEqual([
       "/root/notes/a.md",
     ]);
+  });
+
+  it("filters file names while preserving matching directory ancestors", () => {
+    const entries: WorkspaceEntry[] = [
+      {
+        path: "/root/drafts",
+        name: "drafts",
+        kind: "directory",
+        children: [
+          {
+            path: "/root/drafts/Meeting Notes.md",
+            name: "Meeting Notes.md",
+            kind: "markdown",
+            children: [],
+          },
+          {
+            path: "/root/drafts/plan.md",
+            name: "plan.md",
+            kind: "markdown",
+            children: [],
+          },
+        ],
+      },
+      {
+        path: "/root/readme.md",
+        name: "readme.md",
+        kind: "markdown",
+        children: [],
+      },
+    ];
+
+    const filtered = filterWorkspaceEntries(entries, "meeting");
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.name).toBe("drafts");
+    expect(filtered[0]?.children.map((entry) => entry.name)).toEqual([
+      "Meeting Notes.md",
+    ]);
+    expect(entries[0]?.children).toHaveLength(2);
   });
 
   it("matches path boundaries and chooses the closest nested root", () => {

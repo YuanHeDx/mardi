@@ -39,6 +39,27 @@ interface MarkdownEnvironment {
   localImageSources: Set<string>;
 }
 
+function wrapSelectableText(html: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const walker = document.createTreeWalker(template.content, 4);
+  const textNodes: Text[] = [];
+  let node: Text | null;
+
+  while ((node = walker.nextNode() as Text | null)) {
+    if (/\S/u.test(node.data)) textNodes.push(node);
+  }
+
+  for (const textNode of textNodes) {
+    const wrapper = document.createElement("span");
+    wrapper.className = "markdown-text";
+    textNode.replaceWith(wrapper);
+    wrapper.append(textNode);
+  }
+
+  return template.innerHTML;
+}
+
 export class SafeMarkdownRenderer implements MarkdownRenderer {
   private readonly parser: MarkdownItInstance;
 
@@ -101,9 +122,10 @@ export class SafeMarkdownRenderer implements MarkdownRenderer {
     const localImageSources = new Set<string>();
 
     const rendered = this.parser.render(source, { localImageSources });
-    const html = DOMPurify.sanitize(rendered, {
+    const sanitized = DOMPurify.sanitize(rendered, {
       ADD_ATTR: ["data-local-image", "target", "rel"],
     });
+    const html = wrapSelectableText(sanitized);
 
     return { html, localImageSources: [...localImageSources] };
   }

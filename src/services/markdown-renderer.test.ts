@@ -9,9 +9,29 @@ describe("SafeMarkdownRenderer", () => {
       "# mardi\n\n- [x] open a file\n\n```ts\nconst ready = true\n```",
     );
 
-    expect(result.html).toContain("<h1>mardi</h1>");
+    const host = document.createElement("div");
+    host.innerHTML = result.html;
+    expect(host.querySelector("h1")?.textContent).toBe("mardi");
     expect(result.html).toContain('type="checkbox"');
     expect(result.html).toContain("hljs-keyword");
+  });
+
+  it("marks only rendered text as selectable highlight content", () => {
+    const result = renderer.render("first paragraph\n\n## Second heading");
+    const host = document.createElement("div");
+    host.innerHTML = result.html;
+
+    expect(
+      Array.from(host.querySelectorAll(".markdown-text"), (element) =>
+        element.textContent,
+      ),
+    ).toEqual(["first paragraph", "Second heading"]);
+    expect(host.textContent).toBe("first paragraph\nSecond heading\n");
+    expect(
+      Array.from(host.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .every((node) => !/\S/u.test(node.textContent ?? "")),
+    ).toBe(true);
   });
 
   it("removes executable HTML", () => {

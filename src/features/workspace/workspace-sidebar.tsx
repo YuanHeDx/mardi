@@ -8,13 +8,16 @@ import {
   Film,
   Folder,
   FolderOpen,
+  FolderPlus,
   Pencil,
   RotateCw,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useRef, useState, type MouseEvent } from "react";
 import {
+  filterWorkspaceEntries,
   fileNameParts,
   type RootWorkspace,
   type WorkspaceEntry,
@@ -28,6 +31,7 @@ interface WorkspaceSidebarProps {
   canManageFiles: boolean;
   onOpenFile: () => void;
   onOpenFolder: () => void;
+  onRefreshFiles: () => void | Promise<void>;
   onRemoveRoot: (rootPath: string) => void;
   onRetryRoot: (rootPath: string) => void;
   onSelectEntry: (entry: WorkspaceEntry, rootPath: string) => void;
@@ -35,6 +39,11 @@ interface WorkspaceSidebarProps {
   onTogglePath: (rootPath: string, path: string) => void;
   onExpandPath: (rootPath: string, path: string) => void;
   onCreateFile: (
+    rootPath: string,
+    parentPath: string,
+    name: string,
+  ) => Promise<boolean>;
+  onCreateDirectory: (
     rootPath: string,
     parentPath: string,
     name: string,
@@ -52,6 +61,7 @@ type EditingState =
       mode: "create";
       rootPath: string;
       parentPath: string;
+      kind: "markdown" | "directory";
     }
   | {
       mode: "rename";
@@ -145,6 +155,7 @@ interface TreeEntryProps {
     parentPath: string,
     name: string,
   ) => Promise<boolean>;
+  onCreateDirectory: WorkspaceSidebarProps["onCreateDirectory"];
   onRenameFile: (
     entry: WorkspaceEntry,
     rootPath: string,
@@ -157,6 +168,7 @@ interface TreeEntryProps {
   ) => void;
   onToggle: (rootPath: string, path: string) => void;
   onSelectEntry: (entry: WorkspaceEntry, rootPath: string) => void;
+  forceExpanded: boolean;
 }
 
 function TreeEntry({
@@ -168,15 +180,19 @@ function TreeEntry({
   editing,
   onCancelEditing,
   onCreateFile,
+  onCreateDirectory,
   onRenameFile,
   onOpenContextMenu,
   onToggle,
   onSelectEntry,
+  forceExpanded,
 }: TreeEntryProps) {
-  const isCollapsed = collapsedPaths.has(entry.path);
+  const isCollapsed = !forceExpanded && collapsedPaths.has(entry.path);
   const indentation = 14 + level * 16;
-  const isCreatingHere =
-    editing?.mode === "create" && editing.parentPath === entry.path;
+  const createState =
+    editing?.mode === "create" && editing.parentPath === entry.path
+      ? editing
+      : null;
   const isRenaming =
     editing?.mode === "rename" && editing.entry.path === entry.path;
 
@@ -221,18 +237,33 @@ function TreeEntry({
         </div>
         {!isCollapsed ? (
           <ul>
-            {isCreatingHere ? (
+            {createState ? (
               <li>
                 <InlineNameEditor
-                  extension=".md"
-                  entryKind="markdown"
+                  extension={createState.kind === "markdown" ? ".md" : ""}
+                  entryKind={createState.kind}
                   indentation={indentation + 34}
-                  initialValue="未命名"
+                  initialValue={
+                    createState.kind === "markdown" ? "未命名" : "未命名文件夹"
+                  }
                   onCancel={onCancelEditing}
                   onSubmit={(name) =>
-                    onCreateFile(rootPath, entry.path, name)
+                    createState.kind === "markdown"
+                      ? onCreateFile(rootPath, entry.path, name)
+                      : onCreateDirectory(rootPath, entry.path, name)
                   }
                 />
+              </li>
+            ) : null}
+            {entry.error ? (
+              <li>
+                <div
+                  className="tree-subtree-error"
+                  style={{ paddingLeft: indentation + 34 }}
+                  title={entry.error}
+                >
+                  <span>无法读取此文件夹</span>
+                </div>
               </li>
             ) : null}
             {entry.children.map((child) => (
@@ -241,10 +272,12 @@ function TreeEntry({
                 collapsedPaths={collapsedPaths}
                 editing={editing}
                 entry={child}
+                forceExpanded={forceExpanded}
                 key={child.path}
                 level={level + 1}
                 onCancelEditing={onCancelEditing}
                 onCreateFile={onCreateFile}
+                onCreateDirectory={onCreateDirectory}
                 onOpenContextMenu={onOpenContextMenu}
                 onRenameFile={onRenameFile}
                 onSelectEntry={onSelectEntry}
@@ -285,6 +318,7 @@ interface RootEntryProps {
   editing: EditingState | null;
   onCancelEditing: () => void;
   onCreateFile: WorkspaceSidebarProps["onCreateFile"];
+  onCreateDirectory: WorkspaceSidebarProps["onCreateDirectory"];
   onRenameFile: WorkspaceSidebarProps["onRenameFile"];
   onOpenRootContextMenu: (event: MouseEvent, workspace: RootWorkspace) => void;
   onOpenEntryContextMenu: (
@@ -296,6 +330,7 @@ interface RootEntryProps {
   onSelectEntry: (entry: WorkspaceEntry, rootPath: string) => void;
   onTogglePath: (rootPath: string, path: string) => void;
   onToggleRoot: (workspace: RootWorkspace) => void;
+  filterQuery: string;
 }
 
 function RootEntry({
@@ -304,6 +339,7 @@ function RootEntry({
   editing,
   onCancelEditing,
   onCreateFile,
+  onCreateDirectory,
   onRenameFile,
   onOpenRootContextMenu,
   onOpenEntryContextMenu,
@@ -311,25 +347,45 @@ function RootEntry({
   onSelectEntry,
   onTogglePath,
   onToggleRoot,
+  filterQuery,
 }: RootEntryProps) {
   const { root } = workspace;
-  const collapsedPaths = new Set(workspace.collapsedPaths);
-  const isCreatingAtRoot =
-    editing?.mode === "create" && editing.parentPath === root.rootPath;
+  const isFiltering = Boolean(filterQuery.trim());
+  const isExpanded = workspace.isExpanded || isFiltering;
+  const collapsedPaths = new Set(
+    isFiltering ? [] : workspace.collapsedPaths,
+  );
+  const visibleEntries = filterWorkspaceEntries(
+    workspace.entries ?? [],
+    filterQuery,
+  );
+  const createState =
+    editing?.mode === "create" && editing.parentPath === root.rootPath
+      ? editing
+      : null;
+
+  if (
+    isFiltering &&
+    !workspace.isLoading &&
+    !workspace.error &&
+    visibleEntries.length === 0
+  ) {
+    return null;
+  }
 
   return (
     <li className="root-entry">
       <div className="root-row">
         <button
-          aria-expanded={workspace.isExpanded}
+          aria-expanded={isExpanded}
           className="root-main"
           onClick={() => onToggleRoot(workspace)}
           onContextMenu={(event) => onOpenRootContextMenu(event, workspace)}
           title={root.rootPath}
           type="button"
         >
-          {workspace.isExpanded ? <ChevronDown /> : <ChevronRight />}
-          {workspace.isExpanded ? (
+          {isExpanded ? <ChevronDown /> : <ChevronRight />}
+          {isExpanded ? (
             <FolderOpen className="tree-main-icon" />
           ) : (
             <Folder className="tree-main-icon" />
@@ -338,7 +394,7 @@ function RootEntry({
         </button>
       </div>
 
-      {workspace.isExpanded ? (
+      {isExpanded ? (
         <div className="root-contents">
           {workspace.isLoading ? (
             <div className="root-message">正在读取…</div>
@@ -352,32 +408,38 @@ function RootEntry({
               <RotateCw />
               <span>无法读取，点击重试</span>
             </button>
-          ) : workspace.entries?.length || isCreatingAtRoot ? (
+          ) : visibleEntries.length || createState ? (
             <ul>
-              {isCreatingAtRoot ? (
+              {createState ? (
                 <li>
                   <InlineNameEditor
-                    extension=".md"
-                    entryKind="markdown"
+                    extension={createState.kind === "markdown" ? ".md" : ""}
+                    entryKind={createState.kind}
                     indentation={32}
-                    initialValue="未命名"
+                    initialValue={
+                      createState.kind === "markdown" ? "未命名" : "未命名文件夹"
+                    }
                     onCancel={onCancelEditing}
                     onSubmit={(name) =>
-                      onCreateFile(root.rootPath, root.rootPath, name)
+                      createState.kind === "markdown"
+                        ? onCreateFile(root.rootPath, root.rootPath, name)
+                        : onCreateDirectory(root.rootPath, root.rootPath, name)
                     }
                   />
                 </li>
               ) : null}
-              {workspace.entries?.map((entry) => (
+              {visibleEntries.map((entry) => (
                 <TreeEntry
                   activePath={activePath}
                   collapsedPaths={collapsedPaths}
                   editing={editing}
                   entry={entry}
+                  forceExpanded={isFiltering}
                   key={entry.path}
                   level={0}
                   onCancelEditing={onCancelEditing}
                   onCreateFile={onCreateFile}
+                  onCreateDirectory={onCreateDirectory}
                   onOpenContextMenu={onOpenEntryContextMenu}
                   onRenameFile={onRenameFile}
                   onSelectEntry={onSelectEntry}
@@ -387,7 +449,11 @@ function RootEntry({
               ))}
             </ul>
           ) : (
-            <div className="root-message">没有可预览的文件</div>
+            <div className="root-message">
+              {isFiltering
+                ? "没有匹配的文件或文件夹"
+                : "没有可显示的文件或文件夹"}
+            </div>
           )}
           {workspace.isTruncated ? (
             <div className="root-message">文件较多，仅显示前 20,000 项</div>
@@ -404,6 +470,7 @@ export function WorkspaceSidebar({
   canManageFiles,
   onOpenFile,
   onOpenFolder,
+  onRefreshFiles,
   onRemoveRoot,
   onRetryRoot,
   onSelectEntry,
@@ -411,10 +478,13 @@ export function WorkspaceSidebar({
   onTogglePath,
   onExpandPath,
   onCreateFile,
+  onCreateDirectory,
   onRenameFile,
   onDeleteFile,
 }: WorkspaceSidebarProps) {
   const [editing, setEditing] = useState<EditingState | null>(null);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [contextMenu, setContextMenu] = useState<
     | {
         position: { x: number; y: number };
@@ -424,8 +494,25 @@ export function WorkspaceSidebar({
       }
     | null
   >(null);
+  const isFiltering = Boolean(filterQuery.trim());
+  const hasFilterMatches = roots.some(
+    (workspace) =>
+      filterWorkspaceEntries(workspace.entries ?? [], filterQuery).length > 0,
+  );
+  const isFilterLoading = roots.some((workspace) => workspace.isLoading);
+  const hasFilterError = roots.some((workspace) => workspace.error);
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  const refreshFiles = useCallback(async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      await onRefreshFiles();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [isRefreshing, onRefreshFiles]);
 
   const openRootContextMenu = (
     event: MouseEvent,
@@ -450,20 +537,30 @@ export function WorkspaceSidebar({
     });
   };
 
-  const startCreate = (rootPath: string, parentPath: string) => {
+  const startCreate = (
+    rootPath: string,
+    parentPath: string,
+    kind: "markdown" | "directory",
+  ) => {
+    setFilterQuery("");
     const workspace = roots.find((item) => item.root.rootPath === rootPath);
     if (workspace && !workspace.isExpanded) onToggleRoot(workspace);
     if (parentPath !== rootPath) onExpandPath(rootPath, parentPath);
-    setEditing({ mode: "create", rootPath, parentPath });
+    setEditing({ mode: "create", rootPath, parentPath, kind });
   };
 
   const submitCreate = async (
     rootPath: string,
     parentPath: string,
     name: string,
+    kind: "markdown" | "directory",
   ) => {
-    const stem = name.replace(/\.(?:md|markdown)$/i, "");
-    const didCreate = await onCreateFile(rootPath, parentPath, stem);
+    const nextName =
+      kind === "markdown" ? name.replace(/\.(?:md|markdown)$/i, "") : name;
+    const didCreate =
+      kind === "markdown"
+        ? await onCreateFile(rootPath, parentPath, nextName)
+        : await onCreateDirectory(rootPath, parentPath, nextName);
     if (didCreate) setEditing(null);
     return didCreate;
   };
@@ -499,7 +596,46 @@ export function WorkspaceSidebar({
         >
           <FolderOpen />
         </button>
+        <button
+          aria-label="刷新文件树"
+          className="icon-button"
+          disabled={!canManageFiles || roots.length === 0 || isRefreshing}
+          onClick={() => void refreshFiles()}
+          title="刷新文件树"
+          type="button"
+        >
+          <RotateCw className={isRefreshing ? "is-spinning" : undefined} />
+        </button>
       </div>
+
+      {roots.length > 0 ? (
+        <div className="sidebar-filter">
+          <Search aria-hidden="true" />
+          <input
+            aria-label="筛选文件树"
+            onChange={(event) => {
+              const nextQuery = event.target.value;
+              if (!filterQuery.trim() && nextQuery.trim() && canManageFiles) {
+                void refreshFiles();
+              }
+              setFilterQuery(nextQuery);
+            }}
+            placeholder="筛选文件名"
+            type="search"
+            value={filterQuery}
+          />
+          {filterQuery ? (
+            <button
+              aria-label="清除筛选"
+              onClick={() => setFilterQuery("")}
+              title="清除筛选"
+              type="button"
+            >
+              <X />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {roots.length > 0 ? (
         <nav className="workspace-tree" aria-label="已打开的根目录">
@@ -510,9 +646,14 @@ export function WorkspaceSidebar({
                 editing={
                   editing?.rootPath === workspace.root.rootPath ? editing : null
                 }
+                filterQuery={filterQuery}
                 key={workspace.root.rootPath}
                 onCancelEditing={() => setEditing(null)}
-                onCreateFile={submitCreate}
+                onCreateFile={(rootPath, parentPath, name) =>
+                  submitCreate(rootPath, parentPath, name, "markdown")
+                }
+                onCreateDirectory={(rootPath, parentPath, name) =>
+                  submitCreate(rootPath, parentPath, name, "directory")}
                 onOpenEntryContextMenu={openEntryContextMenu}
                 onOpenRootContextMenu={openRootContextMenu}
                 onRenameFile={submitRename}
@@ -524,6 +665,14 @@ export function WorkspaceSidebar({
               />
             ))}
           </ul>
+          {isFiltering &&
+          !hasFilterMatches &&
+          !isFilterLoading &&
+          !hasFilterError ? (
+            <div className="root-message sidebar-filter-empty">
+              没有匹配的文件或文件夹
+            </div>
+          ) : null}
         </nav>
       ) : (
         <div className="sidebar-empty">
@@ -546,6 +695,17 @@ export function WorkspaceSidebar({
                     startCreate(
                       target.workspace.root.rootPath,
                       target.workspace.root.rootPath,
+                      "markdown",
+                    ),
+                });
+                items.push({
+                  icon: <FolderPlus />,
+                  label: "新建文件夹",
+                  onSelect: () =>
+                    startCreate(
+                      target.workspace.root.rootPath,
+                      target.workspace.root.rootPath,
+                      "directory",
                     ),
                 });
               }
@@ -571,7 +731,12 @@ export function WorkspaceSidebar({
               items.push({
                 icon: <FilePlus2 />,
                 label: "新建 Markdown",
-                onSelect: () => startCreate(rootPath, entry.path),
+                onSelect: () => startCreate(rootPath, entry.path, "markdown"),
+              });
+              items.push({
+                icon: <FolderPlus />,
+                label: "新建文件夹",
+                onSelect: () => startCreate(rootPath, entry.path, "directory"),
               });
             }
             if (canManageFiles) {

@@ -5,6 +5,7 @@ export interface WorkspaceEntry {
   name: string;
   kind: FileKind;
   children: WorkspaceEntry[];
+  error?: string | null;
 }
 
 export interface WorkspaceSnapshot {
@@ -112,6 +113,23 @@ export function flattenMarkdownFiles(
       return flattenMarkdownFiles(entry.children);
     }
     return entry.kind === "markdown" ? [entry] : [];
+  });
+}
+
+export function filterWorkspaceEntries(
+  entries: WorkspaceEntry[],
+  query: string,
+): WorkspaceEntry[] {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return entries;
+
+  return entries.flatMap((entry) => {
+    const matches = entry.name.toLocaleLowerCase().includes(normalizedQuery);
+    if (entry.kind !== "directory") return matches ? [entry] : [];
+    if (matches) return [entry];
+
+    const children = filterWorkspaceEntries(entry.children, normalizedQuery);
+    return children.length > 0 ? [{ ...entry, children }] : [];
   });
 }
 

@@ -13,6 +13,16 @@
   overflow-wrap: break-word;
 }
 
+.markdown-body::selection,
+.markdown-body *::selection {
+  background-color: transparent;
+  color: inherit;
+}
+
+.markdown-body .markdown-text::selection {
+  background-color: var(--selection);
+}
+
 .markdown-body > :first-child {
   margin-top: 0;
 }

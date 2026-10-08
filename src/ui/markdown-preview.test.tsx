@@ -57,7 +57,8 @@ describe("MarkdownPreview selection reporting", () => {
       );
     });
 
-    const secondLine = host.querySelectorAll("p")[1].firstChild as Text;
+    const secondLine = host.querySelectorAll("p .markdown-text")[1]
+      .firstChild as Text;
     const selection = window.getSelection() as Selection;
     const removeAllRanges = vi.spyOn(selection, "removeAllRanges");
     const addRange = vi.spyOn(selection, "addRange");

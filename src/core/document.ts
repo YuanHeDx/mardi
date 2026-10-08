@@ -4,6 +4,7 @@ export interface DocumentSnapshot {
   path: string;
   name: string;
   content: string;
+  fileId?: string | null;
 }
 
 export interface DocumentSession {
@@ -11,13 +12,15 @@ export interface DocumentSession {
   savedContent: string;
   mode: DocumentMode;
   isSaving: boolean;
+  isMissing: boolean;
   error: string | null;
 }
 
 export type DocumentAction =
   | { type: "loaded"; document: DocumentSnapshot }
   | { type: "refreshed"; document: DocumentSnapshot }
-  | { type: "relocated"; path: string; name: string }
+  | { type: "relocated"; path: string; name: string; fileId?: string | null }
+  | { type: "missing"; message: string }
   | { type: "cleared" }
   | { type: "contentChanged"; content: string }
   | { type: "modeChanged"; mode: DocumentMode }
@@ -31,6 +34,7 @@ export const initialDocumentSession: DocumentSession = {
   savedContent: "",
   mode: "preview",
   isSaving: false,
+  isMissing: false,
   error: null,
 };
 
@@ -45,6 +49,7 @@ export function documentReducer(
         savedContent: action.document.content,
         mode: "preview",
         isSaving: false,
+        isMissing: false,
         error: null,
       };
     case "refreshed":
@@ -55,6 +60,7 @@ export function documentReducer(
         ...state,
         document: action.document,
         savedContent: action.document.content,
+        isMissing: false,
         error: null,
       };
     case "relocated":
@@ -65,8 +71,18 @@ export function documentReducer(
           ...state.document,
           path: action.path,
           name: action.name,
+          fileId: action.fileId ?? state.document.fileId,
         },
+        isMissing: false,
         error: null,
+      };
+    case "missing":
+      if (!state.document) return state;
+      return {
+        ...state,
+        isSaving: false,
+        isMissing: true,
+        error: action.message,
       };
     case "cleared":
       return initialDocumentSession;
@@ -75,7 +91,7 @@ export function documentReducer(
       return {
         ...state,
         document: { ...state.document, content: action.content },
-        error: null,
+        error: state.isMissing ? state.error : null,
       };
     case "modeChanged":
       return { ...state, mode: action.mode };
@@ -86,6 +102,7 @@ export function documentReducer(
         ...state,
         savedContent: action.content,
         isSaving: false,
+        isMissing: false,
         error: null,
       };
     case "failed":

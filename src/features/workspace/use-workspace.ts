@@ -147,12 +147,28 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
       setRoots((current) =>
         current.map((workspace) =>
           workspace.root.rootPath === rootPath
-            ? { ...workspace, error: message }
+            ? { ...workspace, isLoading: false, error: message }
             : workspace,
         ),
       );
     }
   }, []);
+
+  const refreshAll = useCallback(async () => {
+    const rootPaths = rootsRef.current.map(
+      (workspace) => workspace.root.rootPath,
+    );
+    if (rootPaths.length === 0) return;
+
+    setRoots((current) =>
+      current.map((workspace) => ({
+        ...workspace,
+        isLoading: true,
+        error: null,
+      })),
+    );
+    await Promise.all(rootPaths.map((rootPath) => refreshRoot(rootPath)));
+  }, [refreshRoot]);
 
   useEffect(() => {
     if (initialRoots.length > 0) return;
@@ -371,6 +387,25 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
     [loadRoot],
   );
 
+  const createDirectory = useCallback(
+    async (rootPath: string, parentPath: string, name: string) => {
+      try {
+        const entry = await workspaceGateway.createDirectory(
+          rootPath,
+          parentPath,
+          name,
+        );
+        await loadRoot(rootPath);
+        setError(null);
+        return entry;
+      } catch (caughtError) {
+        setError(messageFromError(caughtError));
+        return null;
+      }
+    },
+    [loadRoot],
+  );
+
   const renameEntry = useCallback(
     async (rootPath: string, path: string, newStem: string) => {
       try {
@@ -435,6 +470,7 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
     roots,
     error,
     latestChange,
+    refreshAll,
     openWorkspace,
     toggleRoot,
     togglePath,
@@ -442,6 +478,7 @@ export function useWorkspace(initialRoots: RootWorkspace[] = []) {
       setPathExpanded(rootPath, path, true),
     removeRoot,
     createFile,
+    createDirectory,
     renameEntry,
     trashEntry,
     retryRoot: loadRoot,

@@ -95,6 +95,31 @@ describe("document session", () => {
     expect(isDocumentDirty(relocated)).toBe(true);
   });
 
+  it("keeps unsaved content but blocks the stale path after external deletion", () => {
+    const loaded = documentReducer(initialDocumentSession, {
+      type: "loaded",
+      document: { path: "/notes/a.md", name: "a.md", content: "saved" },
+    });
+    const edited = documentReducer(loaded, {
+      type: "contentChanged",
+      content: "draft",
+    });
+    const missing = documentReducer(edited, {
+      type: "missing",
+      message: "原文件已删除",
+    });
+    const editedAgain = documentReducer(missing, {
+      type: "contentChanged",
+      content: "draft 2",
+    });
+
+    expect(editedAgain.document?.content).toBe("draft 2");
+    expect(editedAgain.document?.path).toBe("/notes/a.md");
+    expect(editedAgain.isMissing).toBe(true);
+    expect(editedAgain.error).toBe("原文件已删除");
+    expect(isDocumentDirty(editedAgain)).toBe(true);
+  });
+
   it("counts lines and mixed-language words", () => {
     expect(getDocumentStats("Hello world\n你好")).toEqual({
       words: 4,

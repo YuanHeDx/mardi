@@ -9,10 +9,14 @@ import {
   documentReducer,
   initialDocumentSession,
   isDocumentDirty,
+  type DocumentAction,
   type DocumentSnapshot,
 } from "../../core/document";
 import { documentGateway } from "../../infrastructure/tauri/document-gateway";
 import { isTauriRuntime, messageFromError } from "../../infrastructure/tauri/runtime";
+
+const MISSING_DOCUMENT_MESSAGE =
+  "原文件已在外部删除。当前未保存内容仍保留在编辑器中，不会写回旧路径。";
 
 export function useDocumentSession(initialDocument?: DocumentSnapshot) {
   const [session, dispatch] = useReducer(
@@ -28,11 +32,20 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
   const dirtyRef = useRef(dirty);
   const sessionRef = useRef(session);
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
+  const locationCheckRef = useRef(0);
 
   useLayoutEffect(() => {
     dirtyRef.current = dirty;
     sessionRef.current = session;
   }, [dirty, session]);
+
+  const transition = useCallback((action: DocumentAction) => {
+    const next = documentReducer(sessionRef.current, action);
+    sessionRef.current = next;
+    dirtyRef.current = isDocumentDirty(next);
+    dispatch(action);
+    return next;
+  }, []);
 
   const canDiscardChanges = useCallback(() => {
     return (
@@ -56,73 +69,74 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
             return true;
           }
 
+          if (current.isMissing) {
+            transition({ type: "failed", message: MISSING_DOCUMENT_MESSAGE });
+            return false;
+          }
+
           const { path, content } = current.document;
-          const saving = documentReducer(current, { type: "saveStarted" });
-          sessionRef.current = saving;
-          dispatch({ type: "saveStarted" });
+          transition({ type: "saveStarted" });
           try {
             await documentGateway.writeDocument(path, content);
-            const latest = sessionRef.current;
-            const completed = documentReducer(latest, {
-              type: "saveCompleted",
-              content,
-            });
-            sessionRef.current = completed;
-            dirtyRef.current = isDocumentDirty(completed);
-            dispatch({ type: "saveCompleted", content });
+            transition({ type: "saveCompleted", content });
           } catch (error) {
-            const failed = documentReducer(sessionRef.current, {
+            const message = sessionRef.current.isMissing
+              ? MISSING_DOCUMENT_MESSAGE
+              : messageFromError(error);
+            transition({
               type: "failed",
-              message: messageFromError(error),
+              message,
             });
-            sessionRef.current = failed;
-            dirtyRef.current = isDocumentDirty(failed);
-            dispatch({ type: "failed", message: failed.error ?? "保存失败" });
             return false;
           }
         }
       });
     saveQueueRef.current = queuedSave;
     return queuedSave;
-  }, []);
+  }, [transition]);
+
+  const prepareToLeave = useCallback(async () => {
+    if (sessionRef.current.isMissing) return canDiscardChanges();
+    return save();
+  }, [canDiscardChanges, save]);
 
   const openPath = useCallback(
     async (path: string) => {
-      if (!(await save())) return false;
+      if (!(await prepareToLeave())) return false;
       try {
         const document = await documentGateway.readDocument(path);
-        dispatch({ type: "loaded", document });
+        transition({ type: "loaded", document });
         return true;
       } catch (error) {
-        dispatch({ type: "failed", message: messageFromError(error) });
+        transition({ type: "failed", message: messageFromError(error) });
         return false;
       }
     },
-    [save],
+    [prepareToLeave, transition],
   );
 
   const chooseFile = useCallback(async () => {
     try {
       return await documentGateway.chooseSupportedFile();
     } catch (error) {
-      dispatch({ type: "failed", message: messageFromError(error) });
+      transition({ type: "failed", message: messageFromError(error) });
       return null;
     }
-  }, []);
+  }, [transition]);
 
   const closeDocument = useCallback(async () => {
-    if (!(await save())) return false;
-    dispatch({ type: "cleared" });
+    if (!(await prepareToLeave())) return false;
+    transition({ type: "cleared" });
     return true;
-  }, [save]);
+  }, [prepareToLeave, transition]);
 
   const discardDocument = useCallback(() => {
-    dispatch({ type: "cleared" });
-  }, []);
+    transition({ type: "cleared" });
+  }, [transition]);
 
   const relocateDocument = useCallback((path: string, name: string) => {
-    dispatch({ type: "relocated", path, name });
-  }, []);
+    transition({ type: "relocated", path, name });
+  }, [transition]);
 
   const refreshFromDisk = useCallback(async (path: string) => {
     const current = sessionRef.current;
@@ -147,31 +161,89 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         return false;
       }
       if (latest.document.content !== document.content) {
-        dispatch({ type: "refreshed", document });
+        transition({ type: "refreshed", document });
       }
       return true;
     } catch (error) {
-      dispatch({ type: "failed", message: messageFromError(error) });
+      transition({ type: "failed", message: messageFromError(error) });
       return false;
     }
-  }, []);
+  }, [transition]);
+
+  const reconcileDocumentLocation = useCallback(
+    async (rootPaths: string[], candidatePaths: string[]) => {
+      const startingDocument = sessionRef.current.document;
+      const fileId = startingDocument?.fileId;
+      if (!startingDocument || !fileId) return false;
+
+      const check = ++locationCheckRef.current;
+      try {
+        const location = await documentGateway.locateDocument(
+          startingDocument.path,
+          fileId,
+          rootPaths,
+          candidatePaths,
+        );
+        const latest = sessionRef.current;
+        if (
+          check !== locationCheckRef.current ||
+          !latest.document ||
+          latest.document.fileId !== fileId
+        ) {
+          return false;
+        }
+
+        if (!location) {
+          if (dirtyRef.current) {
+            transition({ type: "missing", message: MISSING_DOCUMENT_MESSAGE });
+          } else {
+            transition({ type: "cleared" });
+          }
+          return true;
+        }
+
+        if (
+          latest.document.path !== location.path ||
+          latest.document.name !== location.name ||
+          latest.document.fileId !== location.fileId
+        ) {
+          transition({
+            type: "relocated",
+            path: location.path,
+            name: location.name,
+            fileId: location.fileId,
+          });
+        }
+        if (!dirtyRef.current && !sessionRef.current.isSaving) {
+          await refreshFromDisk(location.path);
+        }
+        return true;
+      } catch (error) {
+        transition({ type: "failed", message: messageFromError(error) });
+        return false;
+      }
+    },
+    [refreshFromDisk, transition],
+  );
 
   const setContent = useCallback((content: string) => {
     const current = sessionRef.current;
     if (!current.document) return;
-    sessionRef.current = {
-      ...current,
-      document: { ...current.document, content },
-    };
-    dirtyRef.current = content !== current.savedContent;
-    dispatch({ type: "contentChanged", content });
-  }, []);
+    transition({ type: "contentChanged", content });
+  }, [transition]);
 
   useEffect(() => {
-    if (!dirty || !session.document || !isTauriRuntime()) return;
+    if (
+      !dirty ||
+      !session.document ||
+      session.isMissing ||
+      !isTauriRuntime()
+    ) {
+      return;
+    }
     const timeout = window.setTimeout(() => void save(), 400);
     return () => window.clearTimeout(timeout);
-  }, [dirty, save, session.document]);
+  }, [dirty, save, session.document, session.isMissing]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -194,7 +266,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         .onCloseRequested(async (event) => {
           if (dirtyRef.current) {
             event.preventDefault();
-            if (await save()) await currentWindow.destroy();
+            if (await prepareToLeave()) await currentWindow.destroy();
           }
         })
         .then((stopListening) => {
@@ -203,7 +275,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     });
 
     return () => unlisten?.();
-  }, [save]);
+  }, [prepareToLeave]);
 
   return {
     session,
@@ -214,11 +286,12 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     discardDocument,
     relocateDocument,
     refreshFromDisk,
+    reconcileDocumentLocation,
     confirmDiscardChanges: canDiscardChanges,
     save,
     setContent,
     setMode: (mode: "preview" | "edit") =>
-      dispatch({ type: "modeChanged", mode }),
-    dismissError: () => dispatch({ type: "dismissedError" }),
+      transition({ type: "modeChanged", mode }),
+    dismissError: () => transition({ type: "dismissedError" }),
   };
 }

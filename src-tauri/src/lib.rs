@@ -4,6 +4,8 @@ mod workspace_files;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use notify::{EventKind, RecursiveMode, Watcher, event::ModifyKind};
 use serde::Serialize;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -24,6 +26,15 @@ struct DocumentPayload {
     path: String,
     name: String,
     content: String,
+    file_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DocumentLocationPayload {
+    path: String,
+    name: String,
+    file_id: String,
 }
 
 #[derive(Serialize)]
@@ -33,6 +44,8 @@ struct WorkspaceEntry {
     name: String,
     kind: FileKind,
     children: Vec<WorkspaceEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize)]
@@ -74,6 +87,16 @@ struct WorkspaceFilesChangedPayload {
 
 fn error_message(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(unix)]
+fn file_identity(metadata: &fs::Metadata) -> Option<String> {
+    Some(format!("{}:{}", metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(_metadata: &fs::Metadata) -> Option<String> {
+    None
 }
 
 fn is_markdown_file(path: &Path) -> bool {
@@ -127,7 +150,154 @@ fn read_document(path: String) -> Result<DocumentPayload, String> {
         path: canonical_path.to_string_lossy().into_owned(),
         name,
         content,
+        file_id: file_identity(&metadata),
     })
+}
+
+fn document_location_for_identity(
+    path: &Path,
+    expected_file_id: &str,
+) -> Result<Option<DocumentLocationPayload>, String> {
+    if !is_markdown_file(path) {
+        return Ok(None);
+    }
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error_message(error)),
+    };
+    if file_identity(&metadata).as_deref() != Some(expected_file_id) {
+        return Ok(None);
+    }
+
+    let path = path.canonicalize().map_err(error_message)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled.md")
+        .to_owned();
+    Ok(Some(DocumentLocationPayload {
+        path: path.to_string_lossy().into_owned(),
+        name,
+        file_id: expected_file_id.to_owned(),
+    }))
+}
+
+fn document_location_for_existing_path(
+    path: &Path,
+) -> Result<Option<DocumentLocationPayload>, String> {
+    if !is_markdown_file(path) {
+        return Ok(None);
+    }
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error_message(error)),
+    };
+    let Some(file_id) = file_identity(&metadata) else {
+        return Ok(None);
+    };
+    let path = path.canonicalize().map_err(error_message)?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled.md")
+        .to_owned();
+    Ok(Some(DocumentLocationPayload {
+        path: path.to_string_lossy().into_owned(),
+        name,
+        file_id,
+    }))
+}
+
+fn locate_document_in_directory(
+    directory: &Path,
+    expected_file_id: &str,
+    depth: usize,
+    entry_count: &mut usize,
+) -> Result<Option<DocumentLocationPayload>, String> {
+    if depth > MAX_WORKSPACE_DEPTH || *entry_count >= MAX_WORKSPACE_ENTRIES {
+        return Ok(None);
+    }
+
+    let items = match fs::read_dir(directory) {
+        Ok(items) => items,
+        Err(_) => return Ok(None),
+    };
+    for item in items {
+        if *entry_count >= MAX_WORKSPACE_ENTRIES {
+            return Ok(None);
+        }
+        let Ok(item) = item else {
+            continue;
+        };
+        let Ok(file_type) = item.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        *entry_count += 1;
+        let path = item.path();
+        if file_type.is_dir() {
+            if let Some(location) =
+                locate_document_in_directory(&path, expected_file_id, depth + 1, entry_count)?
+            {
+                return Ok(Some(location));
+            }
+        } else if file_type.is_file()
+            && let Some(location) = document_location_for_identity(&path, expected_file_id)?
+        {
+            return Ok(Some(location));
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+fn locate_document(
+    app: tauri::AppHandle,
+    current_path: String,
+    file_id: String,
+    root_paths: Vec<String>,
+    candidate_paths: Vec<String>,
+) -> Result<Option<DocumentLocationPayload>, String> {
+    if let Some(location) = document_location_for_identity(Path::new(&current_path), &file_id)? {
+        return Ok(Some(location));
+    }
+
+    let roots = root_paths
+        .iter()
+        .filter_map(|root_path| require_known_root(&app, root_path).ok())
+        .collect::<Vec<_>>();
+    let mut entry_count = 0;
+
+    for candidate in candidate_paths {
+        let path = PathBuf::from(candidate);
+        if roots.iter().all(|root| !path.starts_with(root)) {
+            continue;
+        }
+        if let Some(location) = document_location_for_identity(&path, &file_id)? {
+            return Ok(Some(location));
+        }
+        if path.is_dir()
+            && let Some(location) =
+                locate_document_in_directory(&path, &file_id, 0, &mut entry_count)?
+        {
+            return Ok(Some(location));
+        }
+    }
+
+    for root in roots {
+        if let Some(location) = locate_document_in_directory(&root, &file_id, 0, &mut entry_count)?
+        {
+            return Ok(Some(location));
+        }
+    }
+    document_location_for_existing_path(Path::new(&current_path))
 }
 
 #[tauri::command]
@@ -181,7 +351,9 @@ fn list_entries(
             break;
         }
 
-        let item = item.map_err(error_message)?;
+        let Ok(item) = item else {
+            continue;
+        };
         let path = item.path();
         let name = item.file_name().to_string_lossy().into_owned();
 
@@ -189,22 +361,30 @@ fn list_entries(
             continue;
         }
 
-        let file_type = item.file_type().map_err(error_message)?;
+        let Ok(file_type) = item.file_type() else {
+            continue;
+        };
         if file_type.is_symlink() {
             continue;
         }
 
         if file_type.is_dir() {
-            let children = list_entries(&path, depth + 1, entry_count, is_truncated)?;
-            if !children.is_empty() {
-                *entry_count += 1;
-                entries.push(WorkspaceEntry {
-                    path: path.to_string_lossy().into_owned(),
-                    name,
-                    kind: FileKind::Directory,
-                    children,
-                });
+            if depth >= MAX_WORKSPACE_DEPTH {
+                continue;
             }
+            *entry_count += 1;
+            let children = list_entries(&path, depth + 1, entry_count, is_truncated);
+            let (children, error) = match children {
+                Ok(children) => (children, None),
+                Err(error) => (Vec::new(), Some(error)),
+            };
+            entries.push(WorkspaceEntry {
+                path: path.to_string_lossy().into_owned(),
+                name,
+                kind: FileKind::Directory,
+                children,
+                error,
+            });
         } else if file_type.is_file()
             && let Some(kind) = file_kind(&path)
         {
@@ -214,6 +394,7 @@ fn list_entries(
                 name,
                 kind,
                 children: Vec::new(),
+                error: None,
             });
         }
     }
@@ -318,8 +499,8 @@ fn watch_workspace_roots(
 ) -> Result<(), String> {
     let roots = root_paths
         .iter()
-        .map(|root_path| require_known_root(&app, root_path))
-        .collect::<Result<Vec<_>, _>>()?;
+        .filter_map(|root_path| require_known_root(&app, root_path).ok())
+        .collect::<Vec<_>>();
 
     let event_app = app.clone();
     let mut watcher =
@@ -375,6 +556,7 @@ fn workspace_entry_for_path(path: PathBuf) -> Result<WorkspaceEntry, String> {
         name,
         kind,
         children: Vec::new(),
+        error: None,
     })
 }
 
@@ -387,6 +569,18 @@ fn create_workspace_markdown(
 ) -> Result<WorkspaceEntry, String> {
     let root = require_known_root(&app, &root_path)?;
     workspace_files::create_markdown_file(&root, Path::new(&parent_path), &name)
+        .and_then(workspace_entry_for_path)
+}
+
+#[tauri::command]
+fn create_workspace_directory(
+    app: tauri::AppHandle,
+    root_path: String,
+    parent_path: String,
+    name: String,
+) -> Result<WorkspaceEntry, String> {
+    let root = require_known_root(&app, &root_path)?;
+    workspace_files::create_directory(&root, Path::new(&parent_path), &name)
         .and_then(workspace_entry_for_path)
 }
 
@@ -510,6 +704,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             read_document,
+            locate_document,
             write_document,
             copy_text_to_clipboard,
             list_project_roots,
@@ -518,6 +713,7 @@ pub fn run() {
             forget_project_root,
             list_workspace,
             create_workspace_markdown,
+            create_workspace_directory,
             rename_workspace_entry,
             trash_workspace_entry,
             update_project_view_state,
@@ -530,13 +726,17 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileKind, WorkspaceChangeKind, file_kind, is_markdown_file, workspace_change_kind,
+        FileKind, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_ENTRIES, WorkspaceChangeKind,
+        document_location_for_existing_path, document_location_for_identity, file_identity,
+        file_kind, is_markdown_file, list_entries, locate_document_in_directory,
+        workspace_change_kind,
     };
     use notify::{
         EventKind,
         event::{AccessKind, CreateKind, DataChange, ModifyKind},
     };
-    use std::path::Path;
+    use std::{fs, path::Path};
+    use tempfile::tempdir;
 
     #[test]
     fn recognizes_markdown_extensions_case_insensitively() {
@@ -559,6 +759,93 @@ mod tests {
     }
 
     #[test]
+    fn lists_empty_directories_and_directories_without_previewable_files() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("empty")).unwrap();
+        fs::create_dir(root.path().join("unsupported-only")).unwrap();
+        fs::write(root.path().join("unsupported-only/notes.txt"), "hello").unwrap();
+
+        let mut entry_count = 0;
+        let mut is_truncated = false;
+        let entries = list_entries(root.path(), 0, &mut entry_count, &mut is_truncated).unwrap();
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["empty", "unsupported-only"]
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|entry| { entry.kind == FileKind::Directory && entry.children.is_empty() })
+        );
+        assert_eq!(entry_count, 2);
+        assert!(!is_truncated);
+    }
+
+    #[test]
+    fn keeps_directory_results_within_entry_and_depth_limits() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("a")).unwrap();
+        fs::create_dir(root.path().join("b")).unwrap();
+        let mut entry_count = MAX_WORKSPACE_ENTRIES - 1;
+        let mut is_truncated = false;
+
+        let entries = list_entries(root.path(), 0, &mut entry_count, &mut is_truncated).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entry_count, MAX_WORKSPACE_ENTRIES);
+        assert!(is_truncated);
+
+        let depth_root = tempdir().unwrap();
+        let mut current = depth_root.path().to_path_buf();
+        for level in 1..=(MAX_WORKSPACE_DEPTH + 1) {
+            current = current.join(format!("level-{level}"));
+            fs::create_dir(&current).unwrap();
+        }
+        let mut entry_count = 0;
+        let mut is_truncated = false;
+        let entries =
+            list_entries(depth_root.path(), 0, &mut entry_count, &mut is_truncated).unwrap();
+
+        assert_eq!(entry_count, MAX_WORKSPACE_DEPTH);
+        assert_eq!(entries.len(), 1);
+        assert!(!is_truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keeps_the_root_readable_when_one_nested_directory_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let readable = root.path().join("readable");
+        let unreadable = root.path().join("unreadable");
+        fs::create_dir(&readable).unwrap();
+        fs::create_dir(&unreadable).unwrap();
+        fs::write(readable.join("note.md"), "hello").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut entry_count = 0;
+        let mut is_truncated = false;
+        let entries = list_entries(root.path(), 0, &mut entry_count, &mut is_truncated).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let readable_entry = entries
+            .iter()
+            .find(|entry| entry.name == "readable")
+            .unwrap();
+        let unreadable_entry = entries
+            .iter()
+            .find(|entry| entry.name == "unreadable")
+            .unwrap();
+        assert_eq!(readable_entry.children.len(), 1);
+        assert!(unreadable_entry.children.is_empty());
+        assert!(unreadable_entry.error.is_some());
+    }
+
+    #[test]
     fn classifies_file_watcher_events_without_reacting_to_reads() {
         assert_eq!(
             workspace_change_kind(&EventKind::Access(AccessKind::Any)),
@@ -572,5 +859,55 @@ mod tests {
             workspace_change_kind(&EventKind::Create(CreateKind::File)),
             Some(WorkspaceChangeKind::Structure)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relocates_an_open_document_by_stable_file_identity() {
+        let root = tempdir().unwrap();
+        let original = root.path().join("before.md");
+        fs::write(&original, "hello").unwrap();
+        let file_id = file_identity(&fs::metadata(&original).unwrap()).unwrap();
+        let renamed = root.path().join("after.md");
+        fs::rename(&original, &renamed).unwrap();
+
+        assert!(
+            document_location_for_identity(&original, &file_id)
+                .unwrap()
+                .is_none()
+        );
+        let mut entry_count = 0;
+        let location = locate_document_in_directory(root.path(), &file_id, 0, &mut entry_count)
+            .unwrap()
+            .unwrap();
+        assert_eq!(location.name, "after.md");
+        assert_eq!(location.file_id, file_id);
+        assert_eq!(Path::new(&location.path), renamed.canonicalize().unwrap());
+
+        fs::remove_file(&renamed).unwrap();
+        let mut entry_count = 0;
+        assert!(
+            locate_document_in_directory(root.path(), &file_id, 0, &mut entry_count)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepts_an_atomic_external_replacement_at_the_same_path() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("note.md");
+        fs::write(&path, "before").unwrap();
+        let previous_file_id = file_identity(&fs::metadata(&path).unwrap()).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, "after").unwrap();
+
+        let location = document_location_for_existing_path(&path).unwrap().unwrap();
+        assert_eq!(
+            location.path,
+            path.canonicalize().unwrap().to_string_lossy()
+        );
+        assert_ne!(location.file_id, previous_file_id);
     }
 }

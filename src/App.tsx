@@ -70,13 +70,27 @@ function App() {
   useEffect(() => {
     const change = workspaceSession.latestChange;
     if (!activeDocument || !change) return;
+    if (change.kind === "structure") {
+      void documentSession.reconcileDocumentLocation(
+        workspaceSession.roots.map((workspace) => workspace.root.rootPath),
+        change.paths,
+      );
+      return;
+    }
     const affectsDocument = change.paths.some(
       (path) =>
         isPathWithinRoot(path, activeDocument.path) ||
         isPathWithinRoot(activeDocument.path, path),
     );
     if (affectsDocument) {
-      void documentSession.refreshFromDisk(activeDocument.path);
+      if (activeDocument.fileId) {
+        void documentSession.reconcileDocumentLocation(
+          workspaceSession.roots.map((workspace) => workspace.root.rootPath),
+          change.paths,
+        );
+      } else {
+        void documentSession.refreshFromDisk(activeDocument.path);
+      }
     }
   }, [
     activeDocument?.path,
@@ -154,6 +168,15 @@ function App() {
     return true;
   };
 
+  const handleCreateDirectory = async (
+    rootPath: string,
+    parentPath: string,
+    name: string,
+  ) =>
+    Boolean(
+      await workspaceSession.createDirectory(rootPath, parentPath, name),
+    );
+
   const handleRenameEntry = async (
     entry: WorkspaceEntry,
     rootPath: string,
@@ -227,11 +250,13 @@ function App() {
           <WorkspaceSidebar
             activePath={activePath}
             canManageFiles={runsInTauri}
+            onCreateDirectory={handleCreateDirectory}
             onCreateFile={handleCreateFile}
             onDeleteFile={handleDeleteEntry}
             onExpandPath={workspaceSession.expandPath}
             onOpenFile={() => void handleOpenFile()}
             onOpenFolder={() => void handleOpenFolder()}
+            onRefreshFiles={workspaceSession.refreshAll}
             onRemoveRoot={(rootPath) =>
               void workspaceSession.removeRoot(rootPath)
             }

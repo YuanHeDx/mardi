@@ -25,6 +25,11 @@ export interface WorkspaceGateway {
     parentPath: string,
     name: string,
   ): Promise<WorkspaceEntry>;
+  createDirectory(
+    rootPath: string,
+    parentPath: string,
+    name: string,
+  ): Promise<WorkspaceEntry>;
   renameEntry(
     rootPath: string,
     path: string,
