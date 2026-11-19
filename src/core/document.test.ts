@@ -22,6 +22,7 @@ describe("document session", () => {
 
     const saved = documentReducer(edited, {
       type: "saveCompleted",
+      generation: loaded.loadGeneration,
       content: "Hello mardi",
     });
     expect(isDocumentDirty(saved)).toBe(false);
@@ -42,6 +43,7 @@ describe("document session", () => {
     });
     const completed = documentReducer(editedAgain, {
       type: "saveCompleted",
+      generation: loaded.loadGeneration,
       content: "first edit",
     });
 
@@ -50,7 +52,7 @@ describe("document session", () => {
     expect(isDocumentDirty(completed)).toBe(true);
   });
 
-  it("refreshes a clean document from disk without leaving preview mode", () => {
+  it("refreshes a clean document from disk without changing document identity", () => {
     const loaded = documentReducer(initialDocumentSession, {
       type: "loaded",
       document: { path: "/notes/a.md", name: "a.md", content: "old" },
@@ -62,11 +64,12 @@ describe("document session", () => {
 
     expect(refreshed.document?.content).toBe("new");
     expect(refreshed.savedContent).toBe("new");
-    expect(refreshed.mode).toBe("preview");
+    expect(refreshed.loadGeneration).toBe(loaded.loadGeneration);
+    expect(refreshed.externalRevision).toBe(loaded.externalRevision + 1);
     expect(isDocumentDirty(refreshed)).toBe(false);
   });
 
-  it("keeps unsaved content and mode when the file is renamed", () => {
+  it("keeps unsaved content and identity when the file is renamed", () => {
     const loaded = documentReducer(initialDocumentSession, {
       type: "loaded",
       document: {
@@ -75,10 +78,7 @@ describe("document session", () => {
         content: "saved",
       },
     });
-    const editing = documentReducer(
-      documentReducer(loaded, { type: "contentChanged", content: "draft" }),
-      { type: "modeChanged", mode: "edit" },
-    );
+    const editing = documentReducer(loaded, { type: "contentChanged", content: "draft" });
     const relocated = documentReducer(editing, {
       type: "relocated",
       path: "/notes/new.md",
@@ -91,7 +91,7 @@ describe("document session", () => {
       content: "draft",
     });
     expect(relocated.savedContent).toBe("saved");
-    expect(relocated.mode).toBe("edit");
+    expect(relocated.loadGeneration).toBe(loaded.loadGeneration);
     expect(isDocumentDirty(relocated)).toBe(true);
   });
 
@@ -120,6 +120,12 @@ describe("document session", () => {
     expect(isDocumentDirty(editedAgain)).toBe(true);
   });
 
+  it("ignores save completions belonging to an older loaded document", () => {
+    const a = documentReducer(initialDocumentSession, { type: "loaded", document: { path: "/a.md", name: "a.md", content: "A" } });
+    const b = documentReducer(a, { type: "loaded", document: { path: "/b.md", name: "b.md", content: "B" } });
+    expect(documentReducer(b, { type: "saveCompleted", content: "old A", generation: a.loadGeneration })).toBe(b);
+  });
+
   it("counts lines and mixed-language words", () => {
     expect(getDocumentStats("Hello world\n你好")).toEqual({
       words: 4,
@@ -133,8 +139,9 @@ describe("document session", () => {
       document: { path: "/notes/a.md", name: "a.md", content: "Hello" },
     });
 
-    expect(documentReducer(loaded, { type: "cleared" })).toEqual(
-      initialDocumentSession,
-    );
+    expect(documentReducer(loaded, { type: "cleared" })).toEqual({
+      ...initialDocumentSession,
+      loadGeneration: loaded.loadGeneration + 1,
+    });
   });
 });

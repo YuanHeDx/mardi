@@ -1,23 +1,16 @@
-import { BookOpen, PanelLeft, PencilLine } from "lucide-react";
-import type { DocumentMode } from "../core/document";
+import { PanelLeft } from "lucide-react";
 
 interface TitleBarProps {
   title: string;
   dirty: boolean;
-  mode: DocumentMode;
-  canEdit: boolean;
   sidebarVisible: boolean;
-  onModeChange: (mode: DocumentMode) => void;
   onToggleSidebar: () => void;
 }
 
 export function TitleBar({
   title,
   dirty,
-  mode,
-  canEdit,
   sidebarVisible,
-  onModeChange,
   onToggleSidebar,
 }: TitleBarProps) {
   return (
@@ -41,19 +34,7 @@ export function TitleBar({
         {dirty && <span className="dirty-indicator" aria-label="尚未保存" />}
       </div>
 
-      <div className="title-bar-actions" data-tauri-drag-region>
-        <button
-          aria-label={mode === "preview" ? "编辑 Markdown" : "阅读 Markdown"}
-          aria-pressed={mode === "edit"}
-          className="icon-button"
-          disabled={!canEdit}
-          onClick={() => onModeChange(mode === "preview" ? "edit" : "preview")}
-          title={mode === "preview" ? "编辑 Markdown" : "返回阅读"}
-          type="button"
-        >
-          {mode === "preview" ? <PencilLine /> : <BookOpen />}
-        </button>
-      </div>
+      <div className="title-bar-actions" data-tauri-drag-region />
     </header>
   );
 }

@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useReducer,
   useRef,
+  useState,
 } from "react";
 import {
   documentReducer,
@@ -14,6 +15,8 @@ import {
 } from "../../core/document";
 import { documentGateway } from "../../infrastructure/tauri/document-gateway";
 import { isTauriRuntime, messageFromError } from "../../infrastructure/tauri/runtime";
+
+import type { MarkdownEditorController } from "../editor/editor-controller";
 
 const MISSING_DOCUMENT_MESSAGE =
   "原文件已在外部删除。当前未保存内容仍保留在编辑器中，不会写回旧路径。";
@@ -33,6 +36,20 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
   const sessionRef = useRef(session);
   const saveQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const locationCheckRef = useRef(0);
+  const openOperationRef = useRef(0);
+  const editorControllerRef = useRef<MarkdownEditorController | null>(null);
+  const composingRef = useRef(false);
+  const [isComposing, setIsComposing] = useState(false);
+
+  const registerEditor = useCallback((controller: MarkdownEditorController | null) => {
+    editorControllerRef.current = controller;
+  }, []);
+
+  const setComposing = useCallback((composing: boolean, generation: number) => {
+    if (sessionRef.current.loadGeneration !== generation) return;
+    composingRef.current = composing;
+    setIsComposing(composing);
+  }, []);
 
   useLayoutEffect(() => {
     dirtyRef.current = dirty;
@@ -54,14 +71,36 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     );
   }, []);
 
-  const save = useCallback((): Promise<boolean> => {
-    if (!isTauriRuntime()) return Promise.resolve(true);
+  const finishComposition = useCallback(async (restoreFocus = false) => {
+    if (!composingRef.current) return true;
+    const controller = editorControllerRef.current;
+    const generation = sessionRef.current.loadGeneration;
+    const revision = sessionRef.current.externalRevision;
+    const operation = openOperationRef.current;
+    const finished = await controller?.finishComposition(restoreFocus ? {
+      restoreFocusIf: () => sessionRef.current.loadGeneration === generation &&
+        sessionRef.current.externalRevision === revision &&
+        editorControllerRef.current === controller && openOperationRef.current === operation,
+    } : undefined);
+    if (!finished || composingRef.current) {
+      transition({ type: "failed", message: "请先确认当前输入法候选，再重试保存或打开文件。" });
+      return false;
+    }
+    return true;
+  }, [transition]);
+
+  const saveWithIntent = useCallback(async (intent: "manual" | "auto" | "leave"): Promise<boolean> => {
+    const requestedGeneration = sessionRef.current.loadGeneration;
+    if (intent === "auto" && composingRef.current) return false;
+    if (!(await finishComposition(intent === "manual")) || sessionRef.current.loadGeneration !== requestedGeneration) return false;
+    if (!isTauriRuntime()) return true;
 
     const queuedSave = saveQueueRef.current
       .catch(() => false)
       .then(async () => {
         while (true) {
           const current = sessionRef.current;
+          if (current.loadGeneration !== requestedGeneration || composingRef.current) return false;
           if (
             !current.document ||
             current.document.content === current.savedContent
@@ -74,12 +113,18 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
             return false;
           }
 
+          // A new composition can start while an earlier write is in flight.
+          // The existing snapshot may finish, but marked text must not be written.
+          if (composingRef.current) return false;
           const { path, content } = current.document;
-          transition({ type: "saveStarted" });
+          const generation = current.loadGeneration;
+          transition({ type: "saveStarted", generation });
           try {
             await documentGateway.writeDocument(path, content);
-            transition({ type: "saveCompleted", content });
+            if (sessionRef.current.loadGeneration !== generation) return false;
+            transition({ type: "saveCompleted", content, generation });
           } catch (error) {
+            if (sessionRef.current.loadGeneration !== generation) return false;
             const message = sessionRef.current.isMissing
               ? MISSING_DOCUMENT_MESSAGE
               : messageFromError(error);
@@ -93,21 +138,38 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
       });
     saveQueueRef.current = queuedSave;
     return queuedSave;
-  }, [transition]);
+  }, [finishComposition, transition]);
+
+  const save = useCallback(() => saveWithIntent("manual"), [saveWithIntent]);
 
   const prepareToLeave = useCallback(async () => {
-    if (sessionRef.current.isMissing) return canDiscardChanges();
-    return save();
-  }, [canDiscardChanges, save]);
+    if (sessionRef.current.isMissing) {
+      if (!(await finishComposition())) return false;
+      return canDiscardChanges();
+    }
+    return saveWithIntent("leave");
+  }, [canDiscardChanges, finishComposition, saveWithIntent]);
 
   const openPath = useCallback(
     async (path: string) => {
-      if (!(await prepareToLeave())) return false;
+      const operation = ++openOperationRef.current;
       try {
-        const document = await documentGateway.readDocument(path);
-        transition({ type: "loaded", document });
-        return true;
+        while (operation === openOperationRef.current) {
+          if (!(await prepareToLeave()) || operation !== openOperationRef.current) return false;
+          const beforeRead = sessionRef.current;
+          const document = await documentGateway.readDocument(path);
+          if (operation !== openOperationRef.current) return false;
+          // Typing can continue during an asynchronous disk read. Save that
+          // newer buffer, then read again (especially for same-path reopen).
+          if (beforeRead.document?.content !== sessionRef.current.document?.content || composingRef.current) continue;
+          composingRef.current = false;
+          setIsComposing(false);
+          transition({ type: "loaded", document });
+          return true;
+        }
+        return false;
       } catch (error) {
+        if (operation !== openOperationRef.current) return false;
         transition({ type: "failed", message: messageFromError(error) });
         return false;
       }
@@ -125,12 +187,16 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
   }, [transition]);
 
   const closeDocument = useCallback(async () => {
-    if (!(await prepareToLeave())) return false;
+    const operation = ++openOperationRef.current;
+    if (!(await prepareToLeave()) || operation !== openOperationRef.current) return false;
     transition({ type: "cleared" });
     return true;
   }, [prepareToLeave, transition]);
 
   const discardDocument = useCallback(() => {
+    ++openOperationRef.current;
+    composingRef.current = false;
+    setIsComposing(false);
     transition({ type: "cleared" });
   }, [transition]);
 
@@ -144,7 +210,8 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
       !current.document ||
       current.document.path !== path ||
       dirtyRef.current ||
-      current.isSaving
+      current.isSaving ||
+      composingRef.current
     ) {
       return false;
     }
@@ -156,7 +223,11 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         !latest.document ||
         latest.document.path !== path ||
         dirtyRef.current ||
-        latest.isSaving
+        latest.isSaving ||
+        composingRef.current ||
+        latest.loadGeneration !== current.loadGeneration ||
+        latest.document.content !== current.document.content ||
+        latest.savedContent !== current.savedContent
       ) {
         return false;
       }
@@ -165,6 +236,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
       }
       return true;
     } catch (error) {
+      if (sessionRef.current.loadGeneration !== current.loadGeneration || sessionRef.current.document?.path !== path) return false;
       transition({ type: "failed", message: messageFromError(error) });
       return false;
     }
@@ -172,6 +244,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
 
   const reconcileDocumentLocation = useCallback(
     async (rootPaths: string[], candidatePaths: string[]) => {
+      const generation = sessionRef.current.loadGeneration;
       const startingDocument = sessionRef.current.document;
       const fileId = startingDocument?.fileId;
       if (!startingDocument || !fileId) return false;
@@ -187,6 +260,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         const latest = sessionRef.current;
         if (
           check !== locationCheckRef.current ||
+          latest.loadGeneration !== generation ||
           !latest.document ||
           latest.document.fileId !== fileId
         ) {
@@ -194,7 +268,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         }
 
         if (!location) {
-          if (dirtyRef.current) {
+          if (dirtyRef.current || composingRef.current) {
             transition({ type: "missing", message: MISSING_DOCUMENT_MESSAGE });
           } else {
             transition({ type: "cleared" });
@@ -219,6 +293,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
         }
         return true;
       } catch (error) {
+        if (sessionRef.current.loadGeneration !== generation || check !== locationCheckRef.current) return false;
         transition({ type: "failed", message: messageFromError(error) });
         return false;
       }
@@ -226,9 +301,9 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     [refreshFromDisk, transition],
   );
 
-  const setContent = useCallback((content: string) => {
+  const setContent = useCallback((content: string, generation: number) => {
     const current = sessionRef.current;
-    if (!current.document) return;
+    if (!current.document || current.loadGeneration !== generation) return;
     transition({ type: "contentChanged", content });
   }, [transition]);
 
@@ -237,16 +312,22 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
       !dirty ||
       !session.document ||
       session.isMissing ||
+      isComposing ||
       !isTauriRuntime()
     ) {
       return;
     }
-    const timeout = window.setTimeout(() => void save(), 400);
+    const timeout = window.setTimeout(() => {
+      if (!composingRef.current) void saveWithIntent("auto");
+    }, 400);
     return () => window.clearTimeout(timeout);
-  }, [dirty, save, session.document, session.isMissing]);
+  }, [dirty, isComposing, saveWithIntent, session.document, session.isMissing]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // An IME processing key can retain Cmd/Ctrl+S metadata. It belongs to
+      // composition, not the Save shortcut; do not blur or commit marked text.
+      if (event.isComposing || event.keyCode === 229) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         void save();
@@ -264,7 +345,7 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
       const currentWindow = getCurrentWindow();
       return currentWindow
         .onCloseRequested(async (event) => {
-          if (dirtyRef.current) {
+          if (dirtyRef.current || composingRef.current) {
             event.preventDefault();
             if (await prepareToLeave()) await currentWindow.destroy();
           }
@@ -287,11 +368,11 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
     relocateDocument,
     refreshFromDisk,
     reconcileDocumentLocation,
-    confirmDiscardChanges: canDiscardChanges,
+    confirmDiscardChanges: async () => (await finishComposition()) && canDiscardChanges(),
     save,
     setContent,
-    setMode: (mode: "preview" | "edit") =>
-      transition({ type: "modeChanged", mode }),
+    setComposing,
+    registerEditor,
     dismissError: () => transition({ type: "dismissedError" }),
   };
 }

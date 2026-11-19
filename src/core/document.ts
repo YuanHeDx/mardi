@@ -1,5 +1,3 @@
-export type DocumentMode = "preview" | "edit";
-
 export interface DocumentSnapshot {
   path: string;
   name: string;
@@ -10,7 +8,8 @@ export interface DocumentSnapshot {
 export interface DocumentSession {
   document: DocumentSnapshot | null;
   savedContent: string;
-  mode: DocumentMode;
+  loadGeneration: number;
+  externalRevision: number;
   isSaving: boolean;
   isMissing: boolean;
   error: string | null;
@@ -23,16 +22,16 @@ export type DocumentAction =
   | { type: "missing"; message: string }
   | { type: "cleared" }
   | { type: "contentChanged"; content: string }
-  | { type: "modeChanged"; mode: DocumentMode }
-  | { type: "saveStarted" }
-  | { type: "saveCompleted"; content: string }
+  | { type: "saveStarted"; generation: number }
+  | { type: "saveCompleted"; content: string; generation: number }
   | { type: "failed"; message: string }
   | { type: "dismissedError" };
 
 export const initialDocumentSession: DocumentSession = {
   document: null,
   savedContent: "",
-  mode: "preview",
+  loadGeneration: 0,
+  externalRevision: 0,
   isSaving: false,
   isMissing: false,
   error: null,
@@ -47,7 +46,8 @@ export function documentReducer(
       return {
         document: action.document,
         savedContent: action.document.content,
-        mode: "preview",
+        loadGeneration: state.loadGeneration + 1,
+        externalRevision: 0,
         isSaving: false,
         isMissing: false,
         error: null,
@@ -60,6 +60,7 @@ export function documentReducer(
         ...state,
         document: action.document,
         savedContent: action.document.content,
+        externalRevision: state.externalRevision + 1,
         isMissing: false,
         error: null,
       };
@@ -85,7 +86,7 @@ export function documentReducer(
         error: action.message,
       };
     case "cleared":
-      return initialDocumentSession;
+      return { ...initialDocumentSession, loadGeneration: state.loadGeneration + 1 };
     case "contentChanged":
       if (!state.document) return state;
       return {
@@ -93,17 +94,16 @@ export function documentReducer(
         document: { ...state.document, content: action.content },
         error: state.isMissing ? state.error : null,
       };
-    case "modeChanged":
-      return { ...state, mode: action.mode };
     case "saveStarted":
+      if (state.loadGeneration !== action.generation) return state;
       return { ...state, isSaving: true, error: null };
     case "saveCompleted":
+      if (state.loadGeneration !== action.generation) return state;
       return {
         ...state,
         savedContent: action.content,
         isSaving: false,
-        isMissing: false,
-        error: null,
+        error: state.isMissing ? state.error : null,
       };
     case "failed":
       return { ...state, isSaving: false, error: action.message };

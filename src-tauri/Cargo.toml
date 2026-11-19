@@ -1,6 +1,6 @@
 [package]
 name = "mardi"
-version = "0.1.0"
+version = "0.3.0"
 description = "A lightweight Markdown reader and editor"
 authors = ["mardi contributors"]
 edition = "2024"

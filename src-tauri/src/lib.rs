@@ -1,4 +1,5 @@
 mod project_repository;
+mod recent_files_repository;
 mod workspace_files;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -71,6 +72,9 @@ struct WorkspaceWatcherState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
 }
 
+#[derive(Default)]
+struct PendingOpenFiles(Mutex<Vec<String>>);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum WorkspaceChangeKind {
@@ -125,6 +129,14 @@ fn require_markdown_file(path: &Path) -> Result<(), String> {
         return Err("Markdown 文件不存在或无法读取".into());
     }
     Ok(())
+}
+
+#[tauri::command]
+fn take_pending_open_files(state: tauri::State<PendingOpenFiles>) -> Vec<String> {
+    let Ok(mut paths) = state.0.lock() else {
+        return Vec::new();
+    };
+    std::mem::take(&mut *paths)
 }
 
 #[tauri::command]
@@ -633,6 +645,33 @@ fn update_project_view_state(
     )
 }
 
+// A typed absolute path is an explicit user-open action, just like the picker.
+// Resolve and validate that one file before granting its exact asset URL.
+fn canonical_media_file(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("媒体文件必须使用绝对路径".into());
+    }
+    let requested_kind = file_kind(path);
+    if !matches!(requested_kind, Some(FileKind::Image | FileKind::Video)) {
+        return Err("不支持该媒体格式".into());
+    }
+    let canonical = path.canonicalize().map_err(error_message)?;
+    if file_kind(&canonical) != requested_kind || !canonical.is_file() {
+        return Err("所选路径不是支持的媒体文件".into());
+    }
+    fs::File::open(&canonical).map_err(error_message)?;
+    Ok(canonical)
+}
+
+#[tauri::command]
+fn prepare_media_source(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let canonical = canonical_media_file(Path::new(&path))?;
+    app.asset_protocol_scope()
+        .allow_file(&canonical)
+        .map_err(error_message)?;
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
 fn image_mime_type(path: &Path) -> Option<&'static str> {
     match path
         .extension()
@@ -698,11 +737,16 @@ fn read_local_image(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(WorkspaceWatcherState::default())
+        .manage(PendingOpenFiles::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            recent_files_repository::list_recent_files,
+            recent_files_repository::remember_recent_file,
+            recent_files_repository::forget_recent_file,
+            recent_files_repository::relocate_recent_files,
             read_document,
             locate_document,
             write_document,
@@ -717,18 +761,44 @@ pub fn run() {
             rename_workspace_entry,
             trash_workspace_entry,
             update_project_view_state,
-            read_local_image
+            read_local_image,
+            prepare_media_source,
+            take_pending_open_files
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running mardi");
+        .build(tauri::generate_context!())
+        .expect("error while building mardi");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = event {
+            let paths = urls
+                .iter()
+                .filter_map(|url| url.to_file_path().ok())
+                .filter(|path| is_markdown_file(path))
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+
+            if paths.is_empty() {
+                return;
+            }
+            if let Ok(mut pending) = app.state::<PendingOpenFiles>().0.lock() {
+                pending.extend(paths);
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            let _ = app.emit("open-files-requested", ());
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         FileKind, MAX_WORKSPACE_DEPTH, MAX_WORKSPACE_ENTRIES, WorkspaceChangeKind,
-        document_location_for_existing_path, document_location_for_identity, file_identity,
-        file_kind, is_markdown_file, list_entries, locate_document_in_directory,
+        canonical_media_file, document_location_for_existing_path, document_location_for_identity,
+        file_identity, file_kind, is_markdown_file, list_entries, locate_document_in_directory,
         workspace_change_kind,
     };
     use notify::{
@@ -737,6 +807,59 @@ mod tests {
     };
     use std::{fs, path::Path};
     use tempfile::tempdir;
+
+    #[test]
+    fn prepares_only_one_canonical_supported_media_file() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join("assets")).unwrap();
+        let image = root.path().join("assets/sample.PNG");
+        fs::write(&image, b"image bytes").unwrap();
+        let canonical =
+            canonical_media_file(&root.path().join("assets/../assets/sample.PNG")).unwrap();
+        assert_eq!(canonical, image.canonicalize().unwrap());
+        assert_ne!(canonical, root.path().canonicalize().unwrap());
+        let video = root.path().join("sample.mov");
+        fs::write(&video, b"video bytes").unwrap();
+        assert_eq!(
+            canonical_media_file(&video).unwrap(),
+            video.canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_missing_directory_and_relative_media_paths() {
+        let root = tempdir().unwrap();
+        for name in ["image.svg", "notes.md", "secret.txt"] {
+            let path = root.path().join(name);
+            fs::write(&path, b"data").unwrap();
+            assert!(canonical_media_file(&path).is_err());
+        }
+        let directory = root.path().join("folder.png");
+        fs::create_dir(&directory).unwrap();
+        assert!(canonical_media_file(&directory).is_err());
+        assert!(canonical_media_file(&root.path().join("missing.png")).is_err());
+        assert!(canonical_media_file(Path::new("relative.png")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validates_a_symlink_target_before_authorizing_media() {
+        use std::os::unix::fs::symlink;
+        let root = tempdir().unwrap();
+        let image = root.path().join("real.png");
+        fs::write(&image, b"image").unwrap();
+        let alias = root.path().join("alias.png");
+        symlink(&image, &alias).unwrap();
+        assert_eq!(
+            canonical_media_file(&alias).unwrap(),
+            image.canonicalize().unwrap()
+        );
+        let unsupported = root.path().join("secret.txt");
+        fs::write(&unsupported, b"private text").unwrap();
+        let disguised = root.path().join("disguised.png");
+        symlink(&unsupported, &disguised).unwrap();
+        assert!(canonical_media_file(&disguised).is_err());
+    }
 
     #[test]
     fn recognizes_markdown_extensions_case_insensitively() {

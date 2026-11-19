@@ -40,8 +40,10 @@ export interface RootWorkspace {
 export type MediaKind = "image" | "video";
 
 export interface MediaContent {
+  openGeneration: number;
   kind: MediaKind;
   path: string;
+  canonicalPath?: string;
   name: string;
   rootPath: string | null;
 }

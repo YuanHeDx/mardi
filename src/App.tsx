@@ -1,4 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
 import {
   fileKindFromPath,
@@ -11,6 +13,7 @@ import {
   type WorkspaceEntry,
 } from "./core/workspace";
 import { useDocumentSession } from "./features/document/use-document-session";
+import { useRecentFiles } from "./features/recent-files/use-recent-files";
 import { useWorkspace } from "./features/workspace/use-workspace";
 import { WorkspaceSidebar } from "./features/workspace/workspace-sidebar";
 import { isTauriRuntime } from "./infrastructure/tauri/runtime";
@@ -21,6 +24,7 @@ import {
 } from "./services/demo-content";
 import { MarkdownPreview } from "./ui/markdown-preview";
 import { MediaPreview } from "./ui/media-preview";
+import { OpenFileDialog } from "./ui/open-file-dialog";
 import { StatusBar } from "./ui/status-bar";
 import {
   SelectionToolbar,
@@ -41,7 +45,10 @@ function App() {
   const runsInTauri = useMemo(() => isTauriRuntime(), []);
   const [sidebarVisible, setSidebarVisible] = useState(true);
   const [activeMedia, setActiveMedia] = useState<MediaContent | null>(null);
+  const mediaGenerationRef = useRef(0);
+  const [openFileDialogVisible, setOpenFileDialogVisible] = useState(false);
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
+  const recentFiles = useRecentFiles();
   const documentSession = useDocumentSession(
     runsInTauri ? undefined : browserDemoDocument,
   );
@@ -50,7 +57,7 @@ function App() {
   );
   const { session } = documentSession;
   const activeDocument = session.document;
-  const activePath = activeMedia?.path ?? activeDocument?.path ?? null;
+  const activePath = activeMedia?.canonicalPath ?? activeMedia?.path ?? activeDocument?.path ?? null;
   const activeTitle = activeMedia?.name ?? activeDocument?.name ?? "mardi";
   const displayContent = activeDocument?.content ?? welcomeMarkdown;
   const workspaceRoot = useMemo(
@@ -65,7 +72,7 @@ function App() {
 
   useEffect(() => {
     setTextSelection(null);
-  }, [activeDocument?.path, session.mode]);
+  }, [session.loadGeneration]);
 
   useEffect(() => {
     const change = workspaceSession.latestChange;
@@ -114,23 +121,113 @@ function App() {
     runsInTauri,
   ]);
 
-  const openEntry = async (entry: WorkspaceEntry, rootPath: string | null) => {
+  const openEntry = useCallback(async (entry: WorkspaceEntry, rootPath: string | null) => {
     if (entry.kind === "markdown") {
       const didOpen = await documentSession.openPath(entry.path);
-      if (didOpen) setActiveMedia(null);
-      return;
+      if (didOpen) {
+        setActiveMedia(null);
+        void recentFiles.remember(entry.path);
+      }
+      return didOpen;
     }
 
     if (entry.kind === "image" || entry.kind === "video") {
-      if (!(await documentSession.closeDocument())) return;
+      if (!(await documentSession.closeDocument())) return false;
+      const openGeneration = ++mediaGenerationRef.current;
       setActiveMedia({
+        openGeneration,
         kind: entry.kind,
         path: entry.path,
         name: entry.name,
         rootPath,
       });
+      void recentFiles.remember(entry.path).then((file) => {
+        if (!file) return;
+        // Keep the preview source and playback generation stable when Native
+        // resolves a symlink or /tmp alias to the history's canonical identity.
+        setActiveMedia((current) => current?.openGeneration === openGeneration && current.path === entry.path
+          ? { ...current, canonicalPath: file.path }
+          : current);
+      });
+      return true;
     }
-  };
+
+    return false;
+  }, [documentSession.closeDocument, documentSession.openPath, recentFiles.remember]);
+
+  // A watcher can relocate an already-open document without opening it again.
+  // Follow that known path change without increasing its recency timestamp.
+  const recentDocumentLocation = useRef<{ path: string; generation: number } | null>(null);
+  useEffect(() => {
+    const previous = recentDocumentLocation.current;
+    recentDocumentLocation.current = activeDocument ? { path: activeDocument.path, generation: session.loadGeneration } : null;
+    if (activeDocument && previous && previous.generation === session.loadGeneration && previous.path !== activeDocument.path) {
+      void recentFiles.relocate(previous.path, activeDocument.path);
+    }
+  }, [activeDocument?.path, session.loadGeneration, recentFiles.relocate]);
+
+  const openFileAtPath = useCallback(async (path: string) => {
+    const kind = fileKindFromPath(path);
+    if (!kind) return false;
+
+    return openEntry(
+      {
+        path,
+        name: fileNameFromPath(path),
+        kind,
+        children: [],
+      },
+      findRootPathForFile(workspaceSession.roots, path),
+    );
+  }, [openEntry, workspaceSession.roots]);
+
+  // Root hydration/renames can change the callback without invalidating an
+  // already backend-popped request batch or recreating the native listener.
+  const openFileAtPathRef = useRef(openFileAtPath);
+  useLayoutEffect(() => { openFileAtPathRef.current = openFileAtPath; }, [openFileAtPath]);
+
+  useEffect(() => {
+    if (!runsInTauri) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    let running = false;
+    let rerun = false;
+
+    const drainSystemOpenRequests = async () => {
+      rerun = true;
+      if (running) return;
+      running = true;
+      try {
+        while (!disposed && rerun) {
+          rerun = false;
+          const paths = await invoke<string[]>("take_pending_open_files");
+          for (const path of paths) {
+            if (disposed) return;
+            await openFileAtPathRef.current(path);
+          }
+        }
+      } finally {
+        running = false;
+      }
+    };
+
+    // Opening is serialized across batches as well as within one batch. A new
+    // notification cannot open C in parallel with [A,B] then let old B win.
+    const requestDrain = () => { void drainSystemOpenRequests().catch(() => undefined); };
+    void listen("open-files-requested", requestDrain).then((stopListening) => {
+      if (disposed) {
+        stopListening();
+        return;
+      }
+      unlisten = stopListening;
+      requestDrain();
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [runsInTauri]);
 
   const handleOpenFolder = async () => {
     const snapshot = await workspaceSession.openWorkspace();
@@ -140,21 +237,10 @@ function App() {
     if (firstDocument) await openEntry(firstDocument, snapshot?.rootPath ?? null);
   };
 
-  const handleOpenFile = async () => {
+  const handleChooseFile = async () => {
     const path = await documentSession.chooseFile();
-    if (!path) return;
-    const kind = fileKindFromPath(path);
-    if (!kind) return;
-
-    await openEntry(
-      {
-        path,
-        name: fileNameFromPath(path),
-        kind,
-        children: [],
-      },
-      findRootPathForFile(workspaceSession.roots, path),
-    );
+    if (!path) return false;
+    return openFileAtPath(path);
   };
 
   const handleCreateFile = async (
@@ -182,12 +268,11 @@ function App() {
     rootPath: string,
     newStem: string,
   ) => {
-    const renamed = await workspaceSession.renameEntry(
-      rootPath,
-      entry.path,
-      newStem,
+    const renamed = await recentFiles.runAfterPending(() =>
+      workspaceSession.renameEntry(rootPath, entry.path, newStem),
     );
     if (!renamed) return false;
+    void recentFiles.relocate(entry.path, renamed.path);
 
     if (activeDocument && isPathWithinRoot(activeDocument.path, entry.path)) {
       documentSession.relocateDocument(
@@ -195,13 +280,12 @@ function App() {
         activeDocument.path === entry.path ? renamed.name : activeDocument.name,
       );
     }
-    if (activeMedia && isPathWithinRoot(activeMedia.path, entry.path)) {
-      setActiveMedia({
-        ...activeMedia,
-        path: replacePathPrefix(activeMedia.path, entry.path, renamed.path),
-        name: activeMedia.path === entry.path ? renamed.name : activeMedia.name,
-      });
-    }
+    setActiveMedia((current) => {
+      const identity = current?.canonicalPath ?? current?.path;
+      if (!current || !identity || !isPathWithinRoot(identity, entry.path)) return current;
+      const nextPath = replacePathPrefix(identity, entry.path, renamed.path);
+      return { ...current, path: nextPath, canonicalPath: nextPath, name: identity === entry.path ? renamed.name : current.name };
+    });
     return true;
   };
 
@@ -214,17 +298,17 @@ function App() {
     const isActiveDocument = Boolean(
       activeDocument && isPathWithinRoot(activeDocument.path, entry.path),
     );
-    const isActiveMedia = Boolean(
-      activeMedia && isPathWithinRoot(activeMedia.path, entry.path),
-    );
-    if (isActiveDocument && !documentSession.confirmDiscardChanges()) {
+    if (isActiveDocument && !(await documentSession.confirmDiscardChanges())) {
       return false;
     }
 
-    const didDelete = await workspaceSession.trashEntry(rootPath, entry.path);
+    const didDelete = await recentFiles.runAfterPending(() =>
+      workspaceSession.trashEntry(rootPath, entry.path),
+    );
     if (!didDelete) return false;
+    void recentFiles.forget(entry.path);
     if (isActiveDocument) documentSession.discardDocument();
-    if (isActiveMedia) setActiveMedia(null);
+    setActiveMedia((current) => current && isPathWithinRoot(current.canonicalPath ?? current.path, entry.path) ? null : current);
     return true;
   };
 
@@ -236,10 +320,7 @@ function App() {
   return (
     <div className="app-shell">
       <TitleBar
-        canEdit={Boolean(activeDocument) && !activeMedia}
         dirty={documentSession.dirty}
-        mode={session.mode}
-        onModeChange={documentSession.setMode}
         onToggleSidebar={() => setSidebarVisible((visible) => !visible)}
         sidebarVisible={sidebarVisible}
         title={activeTitle}
@@ -250,11 +331,17 @@ function App() {
           <WorkspaceSidebar
             activePath={activePath}
             canManageFiles={runsInTauri}
+            recentFiles={recentFiles.files}
+            recentFilesError={recentFiles.error}
+            recentFilesLoading={recentFiles.loading}
+            onSelectRecentFile={(file) => void openFileAtPath(file.path)}
+            onRemoveRecentFile={(path) => void recentFiles.forget(path)}
+            onRetryRecentFiles={() => void recentFiles.reload()}
             onCreateDirectory={handleCreateDirectory}
             onCreateFile={handleCreateFile}
             onDeleteFile={handleDeleteEntry}
             onExpandPath={workspaceSession.expandPath}
-            onOpenFile={() => void handleOpenFile()}
+            onOpenFile={() => setOpenFileDialogVisible(true)}
             onOpenFolder={() => void handleOpenFolder()}
             onRefreshFiles={workspaceSession.refreshAll}
             onRemoveRoot={(rootPath) =>
@@ -276,12 +363,18 @@ function App() {
         <main className="document-pane">
           {activeMedia ? (
             <MediaPreview media={activeMedia} />
-          ) : session.mode === "edit" && activeDocument ? (
+          ) : activeDocument ? (
             <Suspense fallback={<div className="editor-loading" />}>
               <MarkdownEditor
+                documentPath={activeDocument.path}
+                externalRevision={session.externalRevision}
+                loadGeneration={session.loadGeneration}
                 onChange={documentSession.setContent}
+                onCompositionChange={documentSession.setComposing}
+                onController={documentSession.registerEditor}
                 onTextSelection={setTextSelection}
                 value={activeDocument.content}
+                workspaceRoot={workspaceRoot}
               />
             </Suspense>
           ) : (
@@ -306,6 +399,14 @@ function App() {
           filePath={activeDocument.path}
           onDismiss={dismissTextSelection}
           selection={textSelection}
+        />
+      ) : null}
+
+      {openFileDialogVisible ? (
+        <OpenFileDialog
+          onCancel={() => setOpenFileDialogVisible(false)}
+          onChooseFile={handleChooseFile}
+          onOpenPath={openFileAtPath}
         />
       ) : null}
 

@@ -23,3 +23,18 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local credentials and workstation-only QA artifacts
+.env
+.env.*
+!.env.example
+.npmrc
+*.p12
+*.pfx
+*.pem
+*.key
+/docs/testing/evidence/
+/docs/testing/screenshots/
+/docs/testing/*-qa-*.md
+/docs/testing/*-results.md
+/docs/testing/*-review.md

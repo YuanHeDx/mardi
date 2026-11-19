@@ -24,11 +24,20 @@ import {
 } from "../../core/workspace";
 import { copyPlainText } from "../../infrastructure/clipboard";
 import { ContextMenu, type ContextMenuItem } from "../../ui/context-menu";
+import type { RecentFile } from "../../core/recent-files";
+import { RecentFilesList } from "./recent-files-list";
+import { SidebarSplitPane } from "./sidebar-split-pane";
 
 interface WorkspaceSidebarProps {
   roots: RootWorkspace[];
   activePath: string | null;
   canManageFiles: boolean;
+  recentFiles?: RecentFile[];
+  recentFilesLoading?: boolean;
+  recentFilesError?: string | null;
+  onSelectRecentFile?: (file: RecentFile) => void;
+  onRemoveRecentFile?: (path: string) => void;
+  onRetryRecentFiles?: () => void;
   onOpenFile: () => void;
   onOpenFolder: () => void;
   onRefreshFiles: () => void | Promise<void>;
@@ -468,6 +477,12 @@ export function WorkspaceSidebar({
   roots,
   activePath,
   canManageFiles,
+  recentFiles = [],
+  recentFilesLoading = false,
+  recentFilesError = null,
+  onSelectRecentFile = () => undefined,
+  onRemoveRecentFile = () => undefined,
+  onRetryRecentFiles = () => undefined,
   onOpenFile,
   onOpenFolder,
   onRefreshFiles,
@@ -608,78 +623,96 @@ export function WorkspaceSidebar({
         </button>
       </div>
 
-      {roots.length > 0 ? (
-        <div className="sidebar-filter">
-          <Search aria-hidden="true" />
-          <input
-            aria-label="筛选文件树"
-            onChange={(event) => {
-              const nextQuery = event.target.value;
-              if (!filterQuery.trim() && nextQuery.trim() && canManageFiles) {
-                void refreshFiles();
-              }
-              setFilterQuery(nextQuery);
-            }}
-            placeholder="筛选文件名"
-            type="search"
-            value={filterQuery}
-          />
-          {filterQuery ? (
-            <button
-              aria-label="清除筛选"
-              onClick={() => setFilterQuery("")}
-              title="清除筛选"
-              type="button"
-            >
-              <X />
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+      <SidebarSplitPane
+        folders={
+          <>
+            <h2 className="sidebar-section-heading">文件夹</h2>
+            {roots.length > 0 ? (
+              <div className="sidebar-filter">
+                <Search aria-hidden="true" />
+                <input
+                  aria-label="筛选文件树"
+                  onChange={(event) => {
+                    const nextQuery = event.target.value;
+                    if (!filterQuery.trim() && nextQuery.trim() && canManageFiles) {
+                      void refreshFiles();
+                    }
+                    setFilterQuery(nextQuery);
+                  }}
+                  placeholder="筛选文件名"
+                  type="search"
+                  value={filterQuery}
+                />
+                {filterQuery ? (
+                  <button
+                    aria-label="清除筛选"
+                    onClick={() => setFilterQuery("")}
+                    title="清除筛选"
+                    type="button"
+                  >
+                    <X />
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
-      {roots.length > 0 ? (
-        <nav className="workspace-tree" aria-label="已打开的根目录">
-          <ul className="root-list">
-            {roots.map((workspace) => (
-              <RootEntry
-                activePath={activePath}
-                editing={
-                  editing?.rootPath === workspace.root.rootPath ? editing : null
-                }
-                filterQuery={filterQuery}
-                key={workspace.root.rootPath}
-                onCancelEditing={() => setEditing(null)}
-                onCreateFile={(rootPath, parentPath, name) =>
-                  submitCreate(rootPath, parentPath, name, "markdown")
-                }
-                onCreateDirectory={(rootPath, parentPath, name) =>
-                  submitCreate(rootPath, parentPath, name, "directory")}
-                onOpenEntryContextMenu={openEntryContextMenu}
-                onOpenRootContextMenu={openRootContextMenu}
-                onRenameFile={submitRename}
-                onRetryRoot={onRetryRoot}
-                onSelectEntry={onSelectEntry}
-                onTogglePath={onTogglePath}
-                onToggleRoot={onToggleRoot}
-                workspace={workspace}
-              />
-            ))}
-          </ul>
-          {isFiltering &&
-          !hasFilterMatches &&
-          !isFilterLoading &&
-          !hasFilterError ? (
-            <div className="root-message sidebar-filter-empty">
-              没有匹配的文件或文件夹
-            </div>
-          ) : null}
-        </nav>
-      ) : (
-        <div className="sidebar-empty">
-          <p>选择一个文件或文件夹</p>
-          <span>打开过的文件夹会保留在这里</span>
-        </div>
-      )}
+            {roots.length > 0 ? (
+              <nav className="workspace-tree" aria-label="已打开的根目录">
+                <ul className="root-list">
+                  {roots.map((workspace) => (
+                    <RootEntry
+                      activePath={activePath}
+                      editing={
+                        editing?.rootPath === workspace.root.rootPath ? editing : null
+                      }
+                      filterQuery={filterQuery}
+                      key={workspace.root.rootPath}
+                      onCancelEditing={() => setEditing(null)}
+                      onCreateFile={(rootPath, parentPath, name) =>
+                        submitCreate(rootPath, parentPath, name, "markdown")
+                      }
+                      onCreateDirectory={(rootPath, parentPath, name) =>
+                        submitCreate(rootPath, parentPath, name, "directory")}
+                      onOpenEntryContextMenu={openEntryContextMenu}
+                      onOpenRootContextMenu={openRootContextMenu}
+                      onRenameFile={submitRename}
+                      onRetryRoot={onRetryRoot}
+                      onSelectEntry={onSelectEntry}
+                      onTogglePath={onTogglePath}
+                      onToggleRoot={onToggleRoot}
+                      workspace={workspace}
+                    />
+                  ))}
+                </ul>
+                {isFiltering &&
+                !hasFilterMatches &&
+                !isFilterLoading &&
+                !hasFilterError ? (
+                  <div className="root-message sidebar-filter-empty">
+                    没有匹配的文件或文件夹
+                  </div>
+                ) : null}
+              </nav>
+            ) : (
+              <div className="sidebar-empty">
+                <p>还没有打开文件夹</p>
+                <span>打开过的文件夹会保留在这里</span>
+              </div>
+            )}
+          </>
+        }
+        recent={
+          <RecentFilesList
+            activePath={activePath}
+            error={recentFilesError}
+            files={recentFiles}
+            loading={recentFilesLoading}
+            onOpen={onSelectRecentFile}
+            onRemove={onRemoveRecentFile}
+            onRetry={onRetryRecentFiles}
+          />
+        }
+      />
 
       {contextMenu ? (
         <ContextMenu

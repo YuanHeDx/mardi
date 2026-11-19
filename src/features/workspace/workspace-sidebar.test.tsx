@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RootWorkspace } from "../../core/workspace";
 import { WorkspaceSidebar } from "./workspace-sidebar";
+import type { ComponentProps } from "react";
 
 const workspace: RootWorkspace = {
   root: {
@@ -38,7 +39,7 @@ const workspace: RootWorkspace = {
   collapsedPaths: [],
 };
 
-function renderSidebar() {
+function renderSidebar(overrides: Partial<ComponentProps<typeof WorkspaceSidebar>> = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -64,6 +65,7 @@ function renderSidebar() {
         onTogglePath={() => undefined}
         onToggleRoot={() => undefined}
         roots={[workspace]}
+        {...overrides}
       />,
     );
   });
@@ -83,6 +85,37 @@ describe("WorkspaceSidebar", () => {
     expect(host.querySelector('[title="/notes/empty-folder"]')).not.toBeNull();
     expect(host.textContent).toContain("empty-folder");
 
+    root.unmount();
+  });
+
+  it("keeps standalone recent files available without any open folders", () => {
+    const onOpen = vi.fn();
+    const onRemove = vi.fn();
+    const files = [
+      { path: "/outside/first/note.md", name: "note.md", kind: "markdown" as const, lastOpenedAt: 2 },
+      { path: "/outside/second/note.md", name: "note.md", kind: "markdown" as const, lastOpenedAt: 1 },
+    ];
+    const { host, root } = renderSidebar({ roots: [], recentFiles: files, activePath: files[0].path, onSelectRecentFile: onOpen, onRemoveRecentFile: onRemove });
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>(".recent-file-open")];
+    expect(buttons.map((button) => button.title)).toEqual(files.map((file) => file.path));
+    expect(host.textContent).toContain("outside/first");
+    expect(host.textContent).toContain("outside/second");
+    expect(buttons[0].getAttribute("aria-current")).toBe("page");
+    flushSync(() => buttons[0].click());
+    expect(onOpen).toHaveBeenCalledWith(files[0]);
+    flushSync(() => (host.querySelector(".recent-file-remove") as HTMLButtonElement).click());
+    expect(onRemove).toHaveBeenCalledWith(files[0].path);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(host.querySelector('[role="separator"]')).not.toBeNull();
+    root.unmount();
+  });
+
+  it("keeps the tree usable when recent history needs a retry", () => {
+    const retry = vi.fn();
+    const { host, root } = renderSidebar({ recentFilesError: "disk unavailable", onRetryRecentFiles: retry });
+    expect(host.querySelector('[title="/notes/meeting-notes.md"]')).not.toBeNull();
+    flushSync(() => (host.querySelector('[aria-label="重试读取最近记录"]') as HTMLButtonElement).click());
+    expect(retry).toHaveBeenCalledOnce();
     root.unmount();
   });
 

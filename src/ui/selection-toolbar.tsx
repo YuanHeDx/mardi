@@ -8,6 +8,7 @@ import { copyPlainText } from "../infrastructure/clipboard";
 
 export interface TextSelection {
   text: string;
+  restoreFocus?: () => void;
   anchor: {
     x: number;
     top: number;
@@ -52,7 +53,7 @@ export function SelectionToolbar({
       if (!toolbarRef.current?.contains(event.target as Node)) onDismiss();
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onDismiss();
+      if (event.key === "Escape") { onDismiss(); selection.restoreFocus?.(); }
     };
     document.addEventListener("pointerdown", handlePointerDown, true);
     document.addEventListener("keydown", handleKeyDown);
@@ -60,7 +61,7 @@ export function SelectionToolbar({
       document.removeEventListener("pointerdown", handlePointerDown, true);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onDismiss]);
+  }, [onDismiss, selection]);
 
   const copyPrompt = async (prompt: string) => {
     try {
@@ -116,7 +117,7 @@ export function SelectionToolbar({
         >
           <div className="selection-annotation-header">
             <span>添加批注</span>
-            <button aria-label="关闭批注" onClick={onDismiss} type="button">
+            <button aria-label="关闭批注" onClick={() => { onDismiss(); selection.restoreFocus?.(); }} type="button">
               <X />
             </button>
           </div>

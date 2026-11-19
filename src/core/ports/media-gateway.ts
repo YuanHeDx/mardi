@@ -1,3 +1,4 @@
 export interface MediaGateway {
-  sourceFor(path: string): string;
+  /** Authorize the explicitly opened file before publishing its display URL. */
+  prepareSource(path: string): Promise<string>;
 }
