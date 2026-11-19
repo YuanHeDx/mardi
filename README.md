@@ -4,13 +4,15 @@ mardi 是一款 macOS 本地 Markdown 编辑器。打开已有的 `.md` 或 `.ma
 
 ## 在 Mac 上安装
 
-**[下载 macOS 安装包（DMG）](https://github.com/YuanHeDx/mardi/releases/latest/download/mardi-macos-universal.dmg)**
+**[下载 macOS 安装包（DMG，v0.3.0）](https://github.com/dragooncjw/mardi/releases/download/v0.3.0/mardi-macos-universal.dmg)**
+
+此安装包由 `dragooncjw/mardi` fork 提供，基于上游 0.3.0 源码构建。
 
 支持 macOS 13 及以上版本，适用于 Apple 芯片和 Intel 芯片。打开 DMG，把 **mardi.app** 拖到「应用程序」，再打开 mardi 并选择本地 Markdown 文件或文件夹。替换旧版前，请先退出 mardi。
 
 安装包使用临时签名，未经 Apple 公证。若 macOS 提示无法验证开发者，可按 Apple 指引在「系统设置 → 隐私与安全性」中允许打开 mardi。[Apple 安装指引](https://support.apple.com/zh-cn/102445)
 
-也可以[从源码构建](#从源码构建)，或在 [GitHub Releases](https://github.com/YuanHeDx/mardi/releases) 查看历史版本。
+也可以[从源码构建](#从源码构建)，或在 [GitHub Releases](https://github.com/YuanHeDx/mardi/releases) 查看项目的正式发布。
 
 ## 阅读与编辑
 
@@ -49,7 +51,7 @@ open src-tauri/target/release/bundle/dmg
 
 ## 发布 macOS 安装包
 
-将包含[发布工作流](.github/workflows/release-macos.yml)和对应版本的提交推送到 GitHub，再为该提交推送与 `src-tauri/tauri.conf.json` 中 `version` 一致的标签，例如 `v0.3.0`。GitHub Actions 会构建通用 DMG，并将 `mardi-macos-universal.dmg` 上传到 GitHub Release。上方的下载链接会指向最新正式版本。
+将包含[发布工作流](.github/workflows/release-macos.yml)和对应版本的提交推送到 GitHub，再为该提交推送与 `src-tauri/tauri.conf.json` 中 `version` 一致的标签，例如 `v0.3.0`。GitHub Actions 会构建通用 DMG，并将 `mardi-macos-universal.dmg` 上传到 GitHub Release。上游首次发布后，可将 README 下载入口更新为对应的上游下载链接。
 
 ## 许可证
 
