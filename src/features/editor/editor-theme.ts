@@ -3,7 +3,7 @@ import { tags } from "@lezer/highlight";
 import { EditorView } from "@codemirror/view";
 
 export const mardiHighlightStyle = HighlightStyle.define(defaultHighlightStyle.specs.map((style) =>
-  style.tag === tags.heading ? { ...style, textDecoration: "none" } : style,
+  style.tag === tags.heading ? { ...style, fontWeight: "inherit", textDecoration: "none" } : style,
 ));
 
 export const mardiEditorTheme = EditorView.theme({

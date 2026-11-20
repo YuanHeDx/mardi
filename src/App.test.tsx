@@ -232,6 +232,7 @@ describe("selection clipboard feedback", () => {
     state.document = { path: "/notes/a.md", name: "a.md", content: "选中文字" };
     vi.mocked(invoke).mockResolvedValue([]);
     const clipboard = deferred<void>();
+    if (action === "批注") vi.mocked(copyPlainText).mockRejectedValueOnce(new Error("clipboard busy"));
     vi.mocked(copyPlainText).mockReturnValueOnce(clipboard.promise);
     await act(async () => root.render(<App />));
     const button = (name: string) => [...host.querySelectorAll("button")].find(
@@ -244,16 +245,23 @@ describe("selection clipboard feedback", () => {
       const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
       setValue.call(input, "请解释");
       flushSync(() => input.dispatchEvent(new Event("input", { bubbles: true })));
+      await act(async () => button("复制批注").click());
+      expect(host.querySelector('[role="status"]')?.textContent).toBe("复制失败，请重试");
+      expect(host.querySelector("textarea")?.value).toBe("请解释");
       flushSync(() => button("复制批注").click());
     }
     expect(copyPlainText).toHaveBeenCalledWith(expect.stringContaining(action === "引用" ? "选中文字" : "请解释"));
-    flushSync(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
-    expect(host.querySelector('[role="toolbar"]')).toBeNull();
+    if (action === "引用") {
+      flushSync(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+    } else {
+      expect(host.querySelector("textarea")?.value).toBe("请解释");
+    }
     const status = host.querySelector('[role="status"]')!;
-    expect(status.textContent).toBe("");
+    expect(status.textContent).not.toContain("已复制");
     vi.useFakeTimers();
     try {
       await act(async () => clipboard.resolve());
+      expect(host.querySelector('[role="toolbar"]')).toBeNull();
       expect(status.textContent).toBe(`${action}已复制到剪贴板，可以粘贴给你的AI`);
       await act(async () => vi.advanceTimersByTimeAsync(3000));
       expect(status.textContent).toBe("");

@@ -192,6 +192,7 @@ export function MarkdownEditor(props: MarkdownEditorProps) {
     const view = new EditorView({ parent: containerRef.current, state: makeState(propsRef.current.value, propsRef.current.loadGeneration) });
     viewRef.current = view;
     const pointerUp = (event: MouseEvent) => {
+      if (!dragging && !pendingLink) return;
       if (pendingLink) {
         if (Math.hypot(event.clientX - pendingLink.x, event.clientY - pendingLink.y) < 4) openLink(view, pendingLink.target);
         pendingLink = null;

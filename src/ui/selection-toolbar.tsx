@@ -67,8 +67,10 @@ export function SelectionToolbar({
     try {
       await copyPlainText(prompt);
       onCopyFeedback(`${action}已复制到剪贴板，可以粘贴给你的AI`);
+      return true;
     } catch {
       onCopyFeedback("复制失败，请重试");
+      return false;
     }
   };
 
@@ -104,10 +106,11 @@ export function SelectionToolbar({
         </>
       ) : (
         <form
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
             if (!annotation.trim()) return;
-            void copyPrompt(
+            const form = event.currentTarget;
+            const copied = await copyPrompt(
               "批注",
               buildAnnotationPrompt({
                 annotation: annotation.trim(),
@@ -115,6 +118,10 @@ export function SelectionToolbar({
                 selectedText: selection.text,
               }),
             );
+            if (copied && form.isConnected) {
+              onDismiss();
+              selection.restoreFocus?.();
+            }
           }}
         >
           <div className="selection-annotation-header">
