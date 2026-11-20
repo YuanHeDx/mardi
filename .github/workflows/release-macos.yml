@@ -44,11 +44,15 @@ jobs:
         run: |
           npm ci
           npm run tauri build -- --target universal-apple-darwin --bundles dmg -- --locked
-          app="$BUNDLE_DIR/macos/mardi.app"
+          dmg=mardi-macos-universal.dmg
+          cp "$BUNDLE_DIR/dmg/mardi_${MARDI_VERSION}_universal.dmg" "$dmg"
+          hdiutil verify "$dmg"
+          mount_dir="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg"
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          app="$mount_dir/mardi.app"
           lipo "$app/Contents/MacOS/mardi" -verify_arch arm64 x86_64
           codesign --verify --deep --strict "$app"
-          cp "$BUNDLE_DIR/dmg/mardi_${MARDI_VERSION}_universal.dmg" mardi-macos-universal.dmg
-          hdiutil verify mardi-macos-universal.dmg
 
       - uses: actions/upload-artifact@v4
         with:
