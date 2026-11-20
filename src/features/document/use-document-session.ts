@@ -339,23 +339,32 @@ export function useDocumentSession(initialDocument?: DocumentSnapshot) {
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
+    let disposed = false;
+    let closing = false;
     let unlisten: (() => void) | undefined;
 
-    void import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
-      const currentWindow = getCurrentWindow();
-      return currentWindow
-        .onCloseRequested(async (event) => {
-          if (dirtyRef.current || composingRef.current) {
-            event.preventDefault();
-            if (await prepareToLeave()) await currentWindow.destroy();
-          }
-        })
-        .then((stopListening) => {
-          unlisten = stopListening;
-        });
+    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+      if (disposed) return;
+      const stopListening = await getCurrentWindow().onCloseRequested(async (event) => {
+        if (disposed || closing) {
+          event.preventDefault();
+          return;
+        }
+        closing = true;
+        try {
+          if (!(await prepareToLeave())) event.preventDefault();
+        } finally {
+          closing = false;
+        }
+      });
+      if (disposed) stopListening();
+      else unlisten = stopListening;
     });
 
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [prepareToLeave]);
 
   return {
