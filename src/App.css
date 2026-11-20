@@ -491,6 +491,15 @@ button.root-message {
   width: 26px;
   height: 26px;
   margin-right: 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.root-row:hover > .folder-create,
+.tree-row-shell:hover > .folder-create,
+.folder-create:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .folder-create svg {
