@@ -20,17 +20,18 @@ interface SelectionToolbarProps {
   filePath: string;
   selection: TextSelection;
   onDismiss: () => void;
+  onCopyFeedback: (message: string) => void;
 }
 
 export function SelectionToolbar({
   filePath,
   selection,
   onDismiss,
+  onCopyFeedback,
 }: SelectionToolbarProps) {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"actions" | "annotation">("actions");
   const [annotation, setAnnotation] = useState("");
-  const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
   const width = mode === "annotation" ? 360 : 164;
   const estimatedHeight = mode === "annotation" ? 120 : 42;
   const left = Math.max(
@@ -45,7 +46,6 @@ export function SelectionToolbar({
   useEffect(() => {
     setMode("actions");
     setAnnotation("");
-    setStatus("idle");
   }, [filePath, selection.text, selection.anchor.x, selection.anchor.top]);
 
   useEffect(() => {
@@ -63,12 +63,14 @@ export function SelectionToolbar({
     };
   }, [onDismiss, selection]);
 
-  const copyPrompt = async (prompt: string) => {
+  const copyPrompt = async (action: "引用" | "批注", prompt: string) => {
     try {
       await copyPlainText(prompt);
-      setStatus("copied");
+      onCopyFeedback(`${action}已复制到剪贴板，可以粘贴给你的AI`);
+      return true;
     } catch {
-      setStatus("error");
+      onCopyFeedback("复制失败，请重试");
+      return false;
     }
   };
 
@@ -85,6 +87,7 @@ export function SelectionToolbar({
           <button
             onClick={() =>
               void copyPrompt(
+                "引用",
                 buildReferencePrompt({
                   filePath,
                   selectedText: selection.text,
@@ -103,16 +106,22 @@ export function SelectionToolbar({
         </>
       ) : (
         <form
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
             if (!annotation.trim()) return;
-            void copyPrompt(
+            const form = event.currentTarget;
+            const copied = await copyPrompt(
+              "批注",
               buildAnnotationPrompt({
                 annotation: annotation.trim(),
                 filePath,
                 selectedText: selection.text,
               }),
             );
+            if (copied && form.isConnected) {
+              onDismiss();
+              selection.restoreFocus?.();
+            }
           }}
         >
           <div className="selection-annotation-header">
@@ -125,10 +134,7 @@ export function SelectionToolbar({
             <textarea
               aria-label="批注内容"
               autoFocus
-              onChange={(event) => {
-                setAnnotation(event.target.value);
-                setStatus("idle");
-              }}
+              onChange={(event) => setAnnotation(event.target.value)}
               placeholder="输入要交给 AI 的要求…"
               rows={2}
               value={annotation}
@@ -144,13 +150,6 @@ export function SelectionToolbar({
           </div>
         </form>
       )}
-      <span aria-live="polite" className="selection-copy-status">
-        {status === "copied"
-          ? "已复制"
-          : status === "error"
-            ? "复制失败"
-            : ""}
-      </span>
     </div>
   );
 }

@@ -48,6 +48,12 @@ function App() {
   const mediaGenerationRef = useRef(0);
   const [openFileDialogVisible, setOpenFileDialogVisible] = useState(false);
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null);
+  const [copyToast, setCopyToast] = useState<{ message: string } | null>(null);
+  useEffect(() => {
+    if (!copyToast) return;
+    const timeout = window.setTimeout(() => setCopyToast(null), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [copyToast]);
   const recentFiles = useRecentFiles();
   const documentSession = useDocumentSession(
     runsInTauri ? undefined : browserDemoDocument,
@@ -398,6 +404,7 @@ function App() {
         <SelectionToolbar
           filePath={activeDocument.path}
           onDismiss={dismissTextSelection}
+          onCopyFeedback={(message) => setCopyToast({ message })}
           selection={textSelection}
         />
       ) : null}
@@ -409,6 +416,8 @@ function App() {
           onOpenPath={openFileAtPath}
         />
       ) : null}
+
+      <div className="copy-toast" role="status">{copyToast?.message}</div>
 
       {visibleError ? (
         <div className="error-banner" role="alert">

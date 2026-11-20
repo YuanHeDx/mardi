@@ -29,6 +29,35 @@ describe("Markdown Live Preview source projections", () => {
     expect(entries(active).some((entry) => entry.className === "cm-heading cm-heading-1")).toBe(true);
   });
 
+  it("keeps prose stable through Enter, dash and space until a list item has text", () => {
+    let state = stateFor("当前的段落");
+    const append = (text: string) => {
+      const end = state.doc.length;
+      state = state.update({
+        changes: { from: end, insert: text },
+        selection: { anchor: end + text.length },
+        effects: previewFocus.of(true),
+      }).state;
+    };
+    const classes = () => entries(state).map((entry) => entry.className);
+    append("\n");
+    for (const text of ["-", " ", "123"]) {
+      append(text);
+      expect(classes()).not.toContain("cm-heading cm-heading-2");
+      expect(classes()).toContain("cm-list-line");
+    }
+    expect(state.sliceDoc()).toBe("当前的段落\n- 123");
+  });
+
+  it("retains intentional Setext headings around an ambiguous list prefix", () => {
+    for (const underline of ["--", "---", "="]) {
+      const state = stateFor(`标题\n${underline}`);
+      const active = state.update({ selection: { anchor: state.doc.length }, effects: previewFocus.of(true) }).state;
+      expect(entries(active).some((entry) => String(entry.className).includes("cm-heading"))).toBe(true);
+    }
+    expect(entries(stateFor("标题\n-")).some((entry) => entry.className === "cm-heading cm-heading-2")).toBe(true);
+  });
+
   it("reveals all selected lines without including a following line at [from,to) boundary", () => {
     let state = stateFor("# one\n**two**\n*three*");
     state = state.update({ selection: EditorSelection.single(0, state.doc.line(3).from) }).state;

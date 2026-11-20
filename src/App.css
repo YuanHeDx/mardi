@@ -732,13 +732,20 @@ button.root-message {
   opacity: 0.3;
 }
 
-.selection-copy-status {
-  position: absolute;
-  right: 7px;
-  bottom: -20px;
-  color: var(--text-muted);
-  font-size: 10px;
-  white-space: nowrap;
+.copy-toast:not(:empty) {
+  position: fixed;
+  z-index: 60;
+  bottom: 48px;
+  left: 50%;
+  max-width: calc(100% - 32px);
+  transform: translateX(-50%);
+  padding: 9px 16px;
+  border-radius: 8px;
+  background: var(--text-primary);
+  color: var(--document-background);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+  font-size: 13px;
+  pointer-events: none;
 }
 
 .sidebar-empty {

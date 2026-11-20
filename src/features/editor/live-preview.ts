@@ -77,8 +77,20 @@ function decorationsFor(state: EditorState, preview: Omit<PreviewState, "decorat
       if (name === "HTMLBlock" || name === "HTMLTag" || name === "CommentBlock" || name === "ProcessingInstructionBlock") return false;
       if (/^ATXHeading[1-6]$/.test(name)) addLine(state.doc.lineAt(node.from).from, `cm-heading cm-heading-${name.slice(-1)}`);
       if (name.startsWith("SetextHeading")) {
-        decorateLines(node, `cm-heading cm-heading-${name.slice(-1)}`);
-        return false; // Setext underlines stay source, including while selected.
+        // A lone dash below prose also parses as a Setext underline until
+        // the first list-item character arrives. Keep the typing line stable.
+        const underline = node.getChild("HeaderMark");
+        const line = underline && state.doc.lineAt(underline.from);
+        const typingBullet = preview.focused && name === "SetextHeading2" && underline && line &&
+          underline.to - underline.from === 1 && state.selection.ranges.some(
+            (range) => range.empty && range.head >= underline.from && range.head <= line.to,
+          );
+        if (typingBullet) {
+          addLine(line.from, "cm-list-line");
+        } else {
+          decorateLines(node, `cm-heading cm-heading-${name.slice(-1)}`);
+          return false; // Keep the Setext underline editable.
+        }
       }
       if (name === "FencedCode" || name === "CodeBlock") {
         decorateLines(node, "cm-code-line");

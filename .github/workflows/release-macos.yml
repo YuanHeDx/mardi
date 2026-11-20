@@ -2,17 +2,21 @@ name: Publish macOS DMG
 
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+    branches: [main]
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+    branches: [main]
+    paths: ['.github/workflows/release-macos.yml']
+
+permissions:
+  contents: read
 
 jobs:
-  publish:
+  build:
     runs-on: macos-15
-    permissions:
-      contents: write
     env:
       RUSTUP_TOOLCHAIN: stable
-      DMG_PATH: src-tauri/target/universal-apple-darwin/release/bundle/dmg/mardi-macos-universal.dmg
+      BUNDLE_DIR: src-tauri/target/universal-apple-darwin/release/bundle
     steps:
       - uses: actions/checkout@v6
         with:
@@ -22,31 +26,84 @@ jobs:
         with:
           node-version: '24.15.0'
 
-      - name: Check release tag
-        id: release
+      - name: Check app version
         run: |
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
             echo "::error::Release tag must match Tauri version v$version"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "MARDI_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Install Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Build universal DMG
+      - name: Build and verify universal DMG
         env:
           APPLE_SIGNING_IDENTITY: '-'
-          MARDI_VERSION: ${{ steps.release.outputs.version }}
         run: |
           npm ci
           npm run tauri build -- --target universal-apple-darwin --bundles dmg -- --locked
-          dmg_dir="$(dirname "$DMG_PATH")"
-          cp "$dmg_dir/mardi_${MARDI_VERSION}_universal.dmg" "$DMG_PATH"
-          hdiutil verify "$DMG_PATH"
+          dmg=mardi-macos-universal.dmg
+          cp "$BUNDLE_DIR/dmg/mardi_${MARDI_VERSION}_universal.dmg" "$dmg"
+          hdiutil verify "$dmg"
+          mount_dir="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "$dmg"
+          trap 'hdiutil detach "$mount_dir"' EXIT
+          app="$mount_dir/mardi.app"
+          lipo "$app/Contents/MacOS/mardi" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict "$app"
 
-      - name: Publish GitHub Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: mardi-macos-universal.dmg
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: macos-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+
+      - name: Publish verified installer
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "$DMG_PATH" --verify-tag --generate-notes --latest
+          GH_REPO: ${{ github.repository }}
+        run: |
+          main_sha="$(gh api "repos/$GH_REPO/branches/main" --jq .commit.sha)"
+          latest=true
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tag="$GITHUB_REF_NAME"
+            title="mardi $tag"
+            if [[ "$GITHUB_SHA" != "$main_sha" ]]; then latest=false; fi
+            tag_args=(--verify-tag)
+          else
+            if [[ "$GITHUB_SHA" != "$main_sha" ]]; then
+              echo "A newer commit is on main. Skipping this release."
+              exit 0
+            fi
+            tag="main-$GITHUB_SHA"
+            title="mardi · ${GITHUB_SHA:0:7}"
+            tag_args=(--target "$GITHUB_SHA")
+          fi
+
+          # Stage the DMG on a draft so Latest always has a downloadable asset.
+          # A rerun may find either an unfinished draft or a published release.
+          draft="$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null)" || {
+            gh release create "$tag" "${tag_args[@]}" --draft --generate-notes --title "$title"
+            draft=true
+          }
+          if [[ "$draft" == true ]]; then
+            gh release upload "$tag" mardi-macos-universal.dmg --clobber
+            gh release edit "$tag" --draft=false --latest="$latest"
+          fi

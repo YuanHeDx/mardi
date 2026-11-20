@@ -9,7 +9,9 @@ import { useDocumentSession } from "./use-document-session";
 
 vi.mock("../../infrastructure/tauri/runtime", () => ({ isTauriRuntime: () => true, messageFromError: (error: unknown) => String(error) }));
 vi.mock("../../infrastructure/tauri/document-gateway", () => ({ documentGateway: { readDocument: vi.fn(), writeDocument: vi.fn(), locateDocument: vi.fn(), chooseSupportedFile: vi.fn() } }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested: async () => () => undefined, destroy: vi.fn() }) }));
+type CloseHandler = (event: { preventDefault: () => void }) => Promise<void>;
+const onCloseRequested = vi.hoisted(() => vi.fn<(handler: CloseHandler) => Promise<() => void>>());
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ onCloseRequested }) }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -29,6 +31,7 @@ function EditorHarness() {
 }
 const setContent = (content: string) => flushSync(() => api.setContent(content, api.session.loadGeneration));
 beforeEach(() => {
+  onCloseRequested.mockReset().mockResolvedValue(() => undefined);
   Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [] });
   Object.defineProperty(Range.prototype, "getBoundingClientRect", { configurable: true, value: () => new DOMRect() });
   vi.mocked(documentGateway.writeDocument).mockReset().mockResolvedValue(undefined);
@@ -40,6 +43,36 @@ beforeEach(() => {
 afterEach(() => { flushSync(() => root.unmount()); host.remove(); vi.useRealTimers(); });
 
 describe("document session save and load gates", () => {
+  it("waits for the pending edit before allowing the native window to close", async () => {
+    await vi.waitFor(() => expect(onCloseRequested).toHaveBeenCalledOnce());
+    const [close] = onCloseRequested.mock.calls[0];
+    const write = deferred<void>();
+    vi.mocked(documentGateway.writeDocument).mockReturnValueOnce(write.promise);
+    setContent("last edit");
+    const preventDefault = vi.fn();
+    const first = close({ preventDefault });
+    await vi.waitFor(() => expect(documentGateway.writeDocument).toHaveBeenCalledWith(initial.path, "last edit"));
+    const repeat = { preventDefault: vi.fn() };
+    await close(repeat);
+    expect(repeat.preventDefault).toHaveBeenCalledOnce();
+    write.resolve();
+    await first;
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("keeps the window open on write failure and allows another close attempt", async () => {
+    await vi.waitFor(() => expect(onCloseRequested).toHaveBeenCalledOnce());
+    const [close] = onCloseRequested.mock.calls[0];
+    vi.mocked(documentGateway.writeDocument).mockRejectedValueOnce(new Error("disk full"));
+    setContent("draft");
+    const preventDefault = vi.fn();
+    await close({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    preventDefault.mockClear();
+    await close({ preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+
   it("writes the newest snapshot after an earlier save finishes", async () => {
     const first = deferred<void>();
     vi.mocked(documentGateway.writeDocument).mockReturnValueOnce(first.promise);

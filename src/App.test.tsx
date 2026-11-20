@@ -6,10 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MediaContent, RootWorkspace } from "./core/workspace";
 import type { RecentFile } from "./core/recent-files";
 import App from "./App";
-import type { ComponentProps } from "react";
+import { act, type ComponentProps } from "react";
+import type { DocumentSnapshot } from "./core/document";
+import type { MarkdownEditor } from "./features/editor/markdown-editor";
+import { copyPlainText } from "./infrastructure/clipboard";
 import type { WorkspaceSidebar } from "./features/workspace/workspace-sidebar";
 
 const state = vi.hoisted(() => ({
+  document: null as DocumentSnapshot | null,
   roots: [] as RootWorkspace[], openPath: vi.fn(), closeDocument: vi.fn(),
   remember: vi.fn(), forget: vi.fn(), relocate: vi.fn(), renameEntry: vi.fn(), trashEntry: vi.fn(), removeRoot: vi.fn(),
   runAfterPending: vi.fn(),
@@ -20,11 +24,16 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setTitle: () => Promise.resolve() }) }));
 vi.mock("./infrastructure/tauri/runtime", () => ({ isTauriRuntime: () => true }));
-vi.mock("./features/document/use-document-session", () => ({ useDocumentSession: () => ({ session: { document: null, loadGeneration: 0, externalRevision: 0, error: null, isSaving: false }, dirty: false, openPath: state.openPath, closeDocument: state.closeDocument }) }));
+vi.mock("./features/document/use-document-session", () => ({ useDocumentSession: () => ({ session: { document: state.document, loadGeneration: 0, externalRevision: 0, error: null, isSaving: false }, dirty: false, openPath: state.openPath, closeDocument: state.closeDocument }) }));
 vi.mock("./features/workspace/use-workspace", () => ({ useWorkspace: () => ({ roots: state.roots, latestChange: null, error: null, renameEntry: state.renameEntry, trashEntry: state.trashEntry, removeRoot: state.removeRoot }) }));
 vi.mock("./features/recent-files/use-recent-files", () => ({ useRecentFiles: () => ({ files: [], loading: false, error: null, remember: state.remember, forget: state.forget, relocate: state.relocate, runAfterPending: state.runAfterPending }) }));
 vi.mock("./features/workspace/workspace-sidebar", () => ({ WorkspaceSidebar: (props: ComponentProps<typeof WorkspaceSidebar>) => { state.sidebar = props; return null; } }));
 vi.mock("./ui/media-preview", () => ({ MediaPreview: ({ media }: { media: MediaContent }) => { state.media = media; return null; } }));
+vi.mock("./infrastructure/clipboard", () => ({ copyPlainText: vi.fn() }));
+vi.mock("./features/editor/markdown-editor", () => ({
+  MarkdownEditor: ({ onTextSelection }: ComponentProps<typeof MarkdownEditor>) =>
+    <button onClick={() => onTextSelection?.({ text: "选中文字", anchor: { x: 150, top: 200, bottom: 220 } })}>选择文本</button>,
+}));
 vi.mock("./ui/title-bar", () => ({ TitleBar: () => null }));
 vi.mock("./ui/status-bar", () => ({ StatusBar: () => null }));
 vi.mock("./ui/markdown-preview", () => ({ MarkdownPreview: () => null }));
@@ -38,6 +47,7 @@ let host: HTMLElement;
 let root: Root;
 let notify: () => void;
 beforeEach(() => {
+  state.document = null;
   state.roots = [];
   state.openPath.mockReset().mockResolvedValue(true);
   state.closeDocument.mockReset().mockResolvedValue(true);
@@ -213,5 +223,50 @@ describe("recent files open and lifecycle integration", () => {
     trashed.resolve(true);
     expect(await deleted).toBe(true);
     await vi.waitFor(() => expect(state.sidebar?.activePath).toBe(switchMedia ? "/private/tmp/new.png" : null));
+  });
+});
+
+
+describe("selection clipboard feedback", () => {
+  it.each(["引用", "批注"])("shows a toast after %s is copied, even if the toolbar is dismissed", async (action) => {
+    state.document = { path: "/notes/a.md", name: "a.md", content: "选中文字" };
+    vi.mocked(invoke).mockResolvedValue([]);
+    const clipboard = deferred<void>();
+    if (action === "批注") vi.mocked(copyPlainText).mockRejectedValueOnce(new Error("clipboard busy"));
+    vi.mocked(copyPlainText).mockReturnValueOnce(clipboard.promise);
+    await act(async () => root.render(<App />));
+    const button = (name: string) => [...host.querySelectorAll("button")].find(
+      (item) => (item.getAttribute("aria-label") ?? item.textContent) === name,
+    )!;
+    flushSync(() => button("选择文本").click());
+    flushSync(() => button(action).click());
+    if (action === "批注") {
+      const input = host.querySelector("textarea")!;
+      const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      setValue.call(input, "请解释");
+      flushSync(() => input.dispatchEvent(new Event("input", { bubbles: true })));
+      await act(async () => button("复制批注").click());
+      expect(host.querySelector('[role="status"]')?.textContent).toBe("复制失败，请重试");
+      expect(host.querySelector("textarea")?.value).toBe("请解释");
+      flushSync(() => button("复制批注").click());
+    }
+    expect(copyPlainText).toHaveBeenCalledWith(expect.stringContaining(action === "引用" ? "选中文字" : "请解释"));
+    if (action === "引用") {
+      flushSync(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+    } else {
+      expect(host.querySelector("textarea")?.value).toBe("请解释");
+    }
+    const status = host.querySelector('[role="status"]')!;
+    expect(status.textContent).not.toContain("已复制");
+    vi.useFakeTimers();
+    try {
+      await act(async () => clipboard.resolve());
+      expect(host.querySelector('[role="toolbar"]')).toBeNull();
+      expect(status.textContent).toBe(`${action}已复制到剪贴板，可以粘贴给你的AI`);
+      await act(async () => vi.advanceTimersByTimeAsync(3000));
+      expect(status.textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
