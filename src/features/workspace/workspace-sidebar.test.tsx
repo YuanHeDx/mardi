@@ -119,6 +119,74 @@ describe("WorkspaceSidebar", () => {
     root.unmount();
   });
 
+  it.each([
+    ["/notes", "button"],
+    ["/notes", "menu"],
+    ["/notes/empty-folder", "button"],
+    ["/notes/empty-folder", "menu"],
+  ])("creates a named file in %s using the %s", (parent, action) => {
+    const onCreateFile = vi.fn(async () => true);
+    const onToggleRoot = vi.fn();
+    const onTogglePath = vi.fn();
+    const { host, root } = renderSidebar({ onCreateFile, onToggleRoot, onTogglePath });
+    const folder = host.querySelector<HTMLButtonElement>(`[title="${parent}"]`)!;
+    if (action === "button") {
+      flushSync(() => folder.parentElement!.querySelector<HTMLButtonElement>(".folder-create")!.click());
+    } else {
+      flushSync(() => folder.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true })));
+      const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((item) => item.textContent === "新建 Markdown")!;
+      flushSync(() => item.click());
+    }
+
+    const input = host.querySelector<HTMLInputElement>('[aria-label="文件名"]')!;
+    expect(document.activeElement).toBe(input);
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "会议.v2.md");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    flushSync(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(onCreateFile).toHaveBeenCalledExactlyOnceWith("/notes", parent, "会议.v2");
+    expect(onToggleRoot).not.toHaveBeenCalled();
+    expect(onTogglePath).not.toHaveBeenCalled();
+    root.unmount();
+  });
+
+  it("reveals a filtered creation target below collapsed ancestors", () => {
+    const parent = "/notes/archive";
+    const target = parent + "/drafts";
+    const onExpandPath = vi.fn();
+    const { host, root } = renderSidebar({
+      roots: [{
+        ...workspace,
+        entries: [{ path: parent, name: "archive", kind: "directory", children: [
+          { path: target, name: "drafts", kind: "directory", children: [] },
+        ] }],
+        collapsedPaths: [parent, target],
+      }],
+      onExpandPath,
+    });
+    const filter = host.querySelector<HTMLInputElement>('[aria-label="筛选文件树"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, "drafts");
+      filter.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    flushSync(() => host.querySelector<HTMLButtonElement>('[aria-label="在 drafts 中新建 Markdown"]')!.click());
+    expect(filter.value).toBe("");
+    expect(onExpandPath.mock.calls).toEqual([["/notes", parent], ["/notes", target]]);
+    root.unmount();
+  });
+
+  it("only offers the row button on manageable folders", () => {
+    const { host, root } = renderSidebar();
+    expect([...host.querySelectorAll(".folder-create")].map((button) => button.getAttribute("aria-label")))
+      .toEqual(["在 notes 中新建 Markdown", "在 empty-folder 中新建 Markdown"]);
+    root.unmount();
+    const readOnly = renderSidebar({ canManageFiles: false });
+    expect(readOnly.host.querySelector(".folder-create")).toBeNull();
+    readOnly.root.unmount();
+  });
+
   it("offers new folder from the root context menu", () => {
     const { host, root } = renderSidebar();
     const rootButton = host.querySelector('[title="/notes"]') as HTMLButtonElement;

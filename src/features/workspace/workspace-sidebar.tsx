@@ -19,6 +19,7 @@ import { useCallback, useRef, useState, type MouseEvent } from "react";
 import {
   filterWorkspaceEntries,
   fileNameParts,
+  isPathWithinRoot,
   type RootWorkspace,
   type WorkspaceEntry,
 } from "../../core/workspace";
@@ -151,7 +152,29 @@ function FileIcon({ entry }: { entry: WorkspaceEntry }) {
   return <FileText className="tree-main-icon" />;
 }
 
+function CreateMarkdownButton({
+  folderName,
+  onClick,
+}: {
+  folderName: string;
+  onClick: () => void;
+}) {
+  const label = `在 ${folderName} 中新建 Markdown`;
+  return (
+    <button
+      aria-label={label}
+      className="icon-button folder-create"
+      onClick={onClick}
+      title={label}
+      type="button"
+    >
+      <FilePlus2 aria-hidden="true" />
+    </button>
+  );
+}
+
 interface TreeEntryProps {
+  onStartCreateFile?: (rootPath: string, parentPath: string) => void;
   entry: WorkspaceEntry;
   rootPath: string;
   activePath: string | null;
@@ -187,6 +210,7 @@ function TreeEntry({
   level,
   collapsedPaths,
   editing,
+  onStartCreateFile,
   onCancelEditing,
   onCreateFile,
   onCreateDirectory,
@@ -243,6 +267,12 @@ function TreeEntry({
             <Folder className="tree-main-icon" />
             <span>{entry.name}</span>
           </button>
+          {onStartCreateFile && !entry.error && (
+            <CreateMarkdownButton
+              folderName={entry.name}
+              onClick={() => onStartCreateFile(rootPath, entry.path)}
+            />
+          )}
         </div>
         {!isCollapsed ? (
           <ul>
@@ -284,6 +314,7 @@ function TreeEntry({
                 forceExpanded={forceExpanded}
                 key={child.path}
                 level={level + 1}
+                onStartCreateFile={onStartCreateFile}
                 onCancelEditing={onCancelEditing}
                 onCreateFile={onCreateFile}
                 onCreateDirectory={onCreateDirectory}
@@ -322,6 +353,7 @@ function TreeEntry({
 }
 
 interface RootEntryProps {
+  onStartCreateFile?: TreeEntryProps["onStartCreateFile"];
   workspace: RootWorkspace;
   activePath: string | null;
   editing: EditingState | null;
@@ -346,6 +378,7 @@ function RootEntry({
   workspace,
   activePath,
   editing,
+  onStartCreateFile,
   onCancelEditing,
   onCreateFile,
   onCreateDirectory,
@@ -401,6 +434,12 @@ function RootEntry({
           )}
           <span>{root.name}</span>
         </button>
+        {onStartCreateFile && !workspace.error && (
+          <CreateMarkdownButton
+            folderName={root.name}
+            onClick={() => onStartCreateFile(root.rootPath, root.rootPath)}
+          />
+        )}
       </div>
 
       {isExpanded ? (
@@ -446,6 +485,7 @@ function RootEntry({
                   forceExpanded={isFiltering}
                   key={entry.path}
                   level={0}
+                  onStartCreateFile={onStartCreateFile}
                   onCancelEditing={onCancelEditing}
                   onCreateFile={onCreateFile}
                   onCreateDirectory={onCreateDirectory}
@@ -560,7 +600,9 @@ export function WorkspaceSidebar({
     setFilterQuery("");
     const workspace = roots.find((item) => item.root.rootPath === rootPath);
     if (workspace && !workspace.isExpanded) onToggleRoot(workspace);
-    if (parentPath !== rootPath) onExpandPath(rootPath, parentPath);
+    for (const path of workspace?.collapsedPaths ?? []) {
+      if (isPathWithinRoot(parentPath, path)) onExpandPath(rootPath, path);
+    }
     setEditing({ mode: "create", rootPath, parentPath, kind });
   };
 
@@ -667,6 +709,11 @@ export function WorkspaceSidebar({
                       }
                       filterQuery={filterQuery}
                       key={workspace.root.rootPath}
+                      onStartCreateFile={
+                        canManageFiles
+                          ? (rootPath, parentPath) => startCreate(rootPath, parentPath, "markdown")
+                          : undefined
+                      }
                       onCancelEditing={() => setEditing(null)}
                       onCreateFile={(rootPath, parentPath, name) =>
                         submitCreate(rootPath, parentPath, name, "markdown")

@@ -486,6 +486,18 @@ button.root-message {
   border-radius: 5px;
 }
 
+.icon-button.folder-create {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+}
+
+.folder-create svg {
+  width: 15px;
+  height: 15px;
+}
+
 .tree-row-shell .tree-row {
   min-width: 0;
   flex: 1;
