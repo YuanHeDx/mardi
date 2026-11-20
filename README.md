@@ -6,6 +6,8 @@ mardi 是一款 macOS 本地 Markdown 编辑器。打开已有的 `.md` 或 `.ma
 
 **[下载 macOS 安装包（DMG）](https://github.com/YuanHeDx/mardi/releases/latest/download/mardi-macos-universal.dmg)**
 
+首个 DMG 发布到 GitHub Releases 后，此链接即可下载。
+
 支持 macOS 13 及以上版本，适用于 Apple 芯片和 Intel 芯片。打开 DMG，把 **mardi.app** 拖到「应用程序」，再打开 mardi 并选择本地 Markdown 文件或文件夹。替换旧版前，请先退出 mardi。
 
 安装包使用临时签名，未经 Apple 公证。若 macOS 提示无法验证开发者，可按 Apple 指引在「系统设置 → 隐私与安全性」中允许打开 mardi。[Apple 安装指引](https://support.apple.com/zh-cn/102445)
