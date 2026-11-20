@@ -1,5 +1,6 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -113,21 +114,27 @@ pub(crate) fn create_markdown_file(
     } else {
         format!("{requested_name}.md")
     };
-    validate_leaf_name(&file_name)?;
-
     let target = parent.join(file_name);
     require_within_root(&target, &root)?;
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                "同名文件已经存在".to_string()
-            } else {
-                error_message(error)
-            }
-        })?;
+    let title = target
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or("无法确定文件标题")?;
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut draft = builder.tempfile_in(&parent).map_err(error_message)?;
+    writeln!(draft, "# {title}\n").map_err(error_message)?;
+    draft.persist_noclobber(&target).map_err(|error| {
+        if error.error.kind() == std::io::ErrorKind::AlreadyExists {
+            "同名文件已经存在".to_string()
+        } else {
+            error_message(error)
+        }
+    })?;
     target.canonicalize().map_err(error_message)
 }
 
@@ -203,8 +210,22 @@ mod tests {
         let root = tempdir().unwrap();
         let path = create_markdown_file(root.path(), root.path(), "notes").unwrap();
         assert_eq!(path.file_name().unwrap(), "notes.md");
-        assert!(path.is_file());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# notes\n\n");
+        fs::write(&path, "existing content").unwrap();
         assert!(create_markdown_file(root.path(), root.path(), "notes").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "existing content");
+    }
+
+    #[test]
+    fn uses_the_final_file_stem_for_the_heading() {
+        let root = tempdir().unwrap();
+        let folder = create_directory(root.path(), root.path(), "notes").unwrap();
+        for name in ["会议.v2.md", "项目 计划.MARKDOWN"] {
+            let path = create_markdown_file(root.path(), &folder, name).unwrap();
+            assert_eq!(path, folder.join(name));
+            let stem = path.file_stem().unwrap().to_str().unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), format!("# {stem}\n\n"));
+        }
     }
 
     #[test]
