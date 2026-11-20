@@ -49,7 +49,9 @@ open src-tauri/target/release/bundle/dmg
 
 ## 发布 macOS 安装包
 
-将包含[发布工作流](.github/workflows/release-macos.yml)和对应版本的提交推送到 GitHub，再为该提交推送与 `src-tauri/tauri.conf.json` 中 `version` 一致的标签，例如 `v0.3.0`。GitHub Actions 会构建通用 DMG，并将 `mardi-macos-universal.dmg` 上传到 GitHub Release。上方的下载链接会指向最新正式版本。
+合并 PR 到 `main` 后，[GitHub Actions](https://github.com/YuanHeDx/mardi/actions/workflows/release-macos.yml) 会从合并后的提交构建通用 DMG，校验双架构、签名和磁盘映像，再发布到 GitHub Releases。README 顶部的下载链接会自动指向最新成功发布的安装包。首次构建完成后，下载链接即可使用。后续构建期间仍可下载上一版。
+
+每次自动发布使用 `main-<完整提交 SHA>` 标签，可以追溯到对应源码。维护者也可以继续推送与应用版本一致的标签（如 `v0.3.0`）来发布命名版本。
 
 ## 许可证
 
