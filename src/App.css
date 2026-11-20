@@ -372,6 +372,7 @@ button {
 }
 
 .root-row {
+  position: relative;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -486,11 +487,16 @@ button.root-message {
   border-radius: 5px;
 }
 
+.root-main:has(+ .folder-create),
+.tree-row:has(+ .folder-create) {
+  padding-right: 34px;
+}
+
 .icon-button.folder-create {
-  flex: none;
+  position: absolute;
+  right: 4px;
   width: 26px;
   height: 26px;
-  margin-right: 4px;
   opacity: 0;
   pointer-events: none;
 }
@@ -500,6 +506,10 @@ button.root-message {
 .folder-create:focus-visible {
   opacity: 1;
   pointer-events: auto;
+}
+
+.icon-button.folder-create:hover {
+  background: transparent;
 }
 
 .folder-create svg {
